@@ -1,0 +1,140 @@
+# 🏥 医院信息系统 (HIS)
+
+基于 **FastAPI + MySQL + 阿里云百炼 Dashscope** 的完整医院信息系统，涵盖全部 15 个功能模块。
+
+---
+
+## 📁 项目结构
+
+```
+his_system/
+├── main.py           # FastAPI 应用入口
+├── config.py         # 全局配置（从 .env 读取）
+├── models.py         # SQLAlchemy ORM 数据模型
+├── schemas.py        # Pydantic 请求/响应模型
+├── database.py       # 数据库连接池
+├── auth.py           # JWT 认证 & 密码哈希
+├── routers.py        # 全部 API 路由（15模块 + AI）
+├── ai_service.py     # 阿里云百炼 Dashscope 集成
+├── seed.py           # 初始化基础数据
+├── pyproject.toml    # 项目依赖
+└── .env.example      # 环境变量模板
+```
+
+---
+
+## 🚀 快速启动
+
+### 1. 环境准备
+
+```bash
+# Python 3.11+
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+### 2. 配置环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入真实数据库密码、JWT密钥、Dashscope API Key
+```
+
+### 3. 创建 MySQL 数据库
+
+```sql
+CREATE DATABASE his_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'his_user'@'localhost' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON his_db.* TO 'his_user'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+### 4. 初始化数据库 & 种子数据
+
+```bash
+python seed.py
+```
+
+### 5. 启动服务
+
+```bash
+python main.py
+# 或
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 6. 访问 API 文档
+
+- Swagger UI：http://localhost:8000/docs
+- ReDoc：http://localhost:8000/redoc
+
+---
+
+## 🔐 默认账号
+
+| 用户名 | 密码 | 角色 |
+|--------|------|------|
+| admin | Admin@123 | 管理员 |
+| doctor1 | Doctor@123 | 医生 |
+| nurse1 | Nurse@123 | 护士 |
+| cashier1 | Cashier@123 | 收费员 |
+| pharmacist1 | Pharma@123 | 药师 |
+
+---
+
+## 📋 功能模块
+
+| # | 模块 | API 前缀 | 说明 |
+|---|------|----------|------|
+| 1 | 门诊挂号管理 | `/api/registrations` | 普通/专家/急诊/专科 |
+| 2 | 门诊划价系统 | `/api/prescriptions` | 处方创建自动划价 |
+| 3 | 门诊收费系统 | `/api/prescriptions/{id}/pay` | 支持单独或联网运行 |
+| 4 | 药房系统 | `/api/pharmacy` | 库存/盘点/退药/统计 |
+| 5 | 药房发药 | `/api/prescriptions/pending-dispense` | 处方自动推送 |
+| 6 | 药库管理 | `/api/warehouse` | 中药库/西药库 |
+| 7 | 出入院管理 | `/api/admissions` | 登记/押金/结算 |
+| 8 | 护士工作站 | `/api/nurse` + `/api/orders` | 床位/医嘱/一日清单 |
+| 9 | 中心药房 | `/api/orders?order_type=药品` | 医嘱发药 |
+| 10 | 检验室收费 | `/api/charges` (category=检验) | 与医嘱联网 |
+| 11 | 手术收费 | `/api/charges` (category=手术) | 与医嘱联网 |
+| 12 | 功能科室收费 | `/api/charges` (category=B超/胃镜/放射) | 与医嘱联网 |
+| 13 | 中医医嘱 | `/api/orders` (order_type=中医) | 与医嘱联网 |
+| 14 | 院长查询 | `/api/director` | 报表 + AI解读 |
+| 15 | 触摸屏导诊 | `/api/kiosk` | IC卡/药价/科室/清单 |
+| AI | AI助手 | `/api/ai` | 阿里云百炼 Dashscope |
+
+---
+
+## 🤖 AI 功能
+
+通过阿里云百炼（Dashscope）接入 `qwen-turbo` 模型：
+
+- **智能对话**：`POST /api/ai/chat` — 通用问答、操作指引
+- **病历摘要**：`POST /api/ai/summarize-patient/{id}` — 自动生成摘要
+- **药物相互作用**：`POST /api/ai/drug-interaction` — 配伍禁忌分析
+- **报表解读**：`GET /api/ai/director-insight` — 院长决策支持
+
+---
+
+## 🛡️ 安全说明
+
+- 所有密码使用 **bcrypt** 哈希存储
+- API 认证使用 **JWT Bearer Token**（HS256）
+- 角色权限控制：admin / doctor / nurse / cashier / pharmacist
+- `.env` 文件包含敏感信息，**切勿提交到版本控制**
+
+---
+
+## 📦 主要依赖
+
+| 库 | 用途 |
+|----|------|
+| FastAPI | Web 框架 |
+| SQLAlchemy 2.0 | ORM（异步） |
+| PyMySQL + aiomysql | MySQL 驱动 |
+| Pydantic v2 | 数据验证 |
+| python-jose | JWT |
+| passlib[bcrypt] | 密码哈希 |
+| dashscope | 阿里云百炼 AI |
+| loguru | 日志 |

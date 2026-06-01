@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run *)",
+      "Bash(where uv *)",
+      "Bash(echo \"EXIT_CODE=$?\")",
+      "Bash(cat -A \"C:\\\\\\\\Users\\\\\\\\16138\\\\\\\\.claude\\\\\\\\settings.json\")",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(uv *)",
+      "Bash(claude --doctor)",
+      "Bash(echo \"ERROR: $?\")",
+      "Bash(claude *)",
+      "Bash(python -c ' *)",
+      "Bash(npx vue-tsc *)",
+      "Bash(npm run *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('routers.py','r',encoding='utf-8'\\).read\\(\\)\\); print\\('✅ routers.py syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('routers.py','r',encoding='utf-8'\\).read\\(\\)\\); print\\('✅'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('routers.py','r',encoding='utf-8'\\).read\\(\\)\\); print\\('✅ Python'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('routers.py','r',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('schemas.py','r',encoding='utf-8'\\).read\\(\\)\\); print\\('✅ All Python OK'\\)\")",
+      "Read(//mnt/c/Users/16138/**)",
+      "Read(//c/Users/16138/Desktop/**)",
+      "Bash(pdftotext \"C:/Users/16138/Desktop/简历.pdf\" -)",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c \"import dashscope; print\\(f'dashscope: {dashscope.__version__}'\\)\")"
+    ]
+  }
+}

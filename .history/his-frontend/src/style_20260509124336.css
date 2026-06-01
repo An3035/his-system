@@ -1,0 +1,23 @@
+/* ✅ 修复：移除了 Vite 默认模板中 #app 的 width:1126px / text-align:center / flex 列布局，
+   这些样式会导致 HIS 全屏侧边栏布局错乱（侧边栏被挤压、内容居中对齐）。
+   保留基础 reset 即可，页面布局由各组件的 el-container 自己控制。 */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  color: #303133;
+  background: #f3f3f4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  width: 100%;
+  height: 100vh;
+}

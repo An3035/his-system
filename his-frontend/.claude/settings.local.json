@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/health)",
+      "Bash(curl -s http://127.0.0.1:8000/api/patients)",
+      "Bash(/d/HIS/.venv/Scripts/python.exe -c \"import aiomysql; print\\('aiomysql OK'\\)\")",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //F //IM python.exe //FI \"WINDOWTITLE eq *main*\")",
+      "Bash(tasklist //FI \"PID eq 46592\")",
+      "Bash(npm install *)",
+      "Bash(/d/HIS/.venv/Scripts/python.exe *)",
+      "Bash(curl -s -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiZXhwIjoxNzc5NDA0MDU3fQ.uUOSNt_9-Y2oJ30E-GfOTxC9zSld0ZmaARz-x5og-vA' http://127.0.0.1:8000/api/admissions)",
+      "Bash(curl -s -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiZXhwIjoxNzc5NDA0MDU3fQ.uUOSNt_9-Y2oJ30E-GfOTxC9zSld0ZmaARz-x5og-vA' http://127.0.0.1:8000/api/director/dashboard)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(/d/HIS/.venv/Scripts/python.exe main.py)",
+      "Bash(curl -s http://127.0.0.1:8000/health)",
+      "Bash(curl -s -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiZXhwIjoxNzc5NDA0MDU3fQ.uUOSNt_9-Y2oJ30E-GfOTxC9zSld0ZmaARz-x5og-vA' http://127.0.0.1:8000/api/warehouse/inventory)",
+      "Bash(curl -s -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiZXhwIjoxNzc5NDA0MDU3fQ.uUOSNt_9-Y2oJ30E-GfOTxC9zSld0ZmaARz-x5og-vA' http://127.0.0.1:8000/api/pharmacy/inventory)",
+      "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' http://127.0.0.1:8000/api/director/dashboard)",
+      "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' http://127.0.0.1:8000/api/warehouse/inventory)",
+      "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' http://127.0.0.1:8000/api/admissions)",
+      "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' http://127.0.0.1:8000/api/pharmacy/inventory)",
+      "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' http://127.0.0.1:8000/api/orders?status=%E5%BE%85%E5%8F%91%E8%8D%AF)",
+      "Bash(npx vite *)"
+    ]
+  }
+}
