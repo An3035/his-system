@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+n o d e _ m o d u l e s / 
+
+echo node_modules/ >> .gitignore
+ 
