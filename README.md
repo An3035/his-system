@@ -104,45 +104,45 @@
 
 ```mermaid
 graph TB
-    subgraph "Frontend (Vue 3)"
+    subgraph FE["🎨 Frontend (Vue 3)"]
+        direction TB
         EP[Element Plus]
         EC[ECharts]
         Router[Vue Router]
     end
     
-    subgraph "Backend (FastAPI)"
+    subgraph BE["⚙️ Backend (FastAPI)"]
+        direction TB
         API[API Layer]
         Auth[JWT Auth]
         RBAC[RBAC]
         Audit[Audit Log]
     end
     
-    subgraph "AI Engine"
+    subgraph AI["🤖 AI Engine"]
+        direction TB
         LG[LangGraph]
         LC[LangChain]
         BA[Balian LLM]
     end
     
-    subgraph "Data Layer"
+    subgraph DL["🗄️ Data Layer"]
+        direction TB
         SQL[(MySQL 8.0)]
         RD[(Redis 7.0)]
         QD[(Qdrant Vector DB)]
     end
     
-    Frontend --> API
-    API --> Auth
-    API --> RBAC
-    API --> AI Engine
-    AI Engine --> SQL
-    AI Engine --> RD
-    AI Engine --> QD
-    API --> SQL
-    API --> RD
+    EP & EC & Router --> API
+    API --> Auth & RBAC
+    API --> LG & LC & BA
+    LG & LC & BA --> SQL & RD & QD
+    API --> SQL & RD
     
-    style Frontend fill:#4ECB8B,color:#fff
-    style Backend fill:#009688,color:#fff
-    style "AI Engine" fill:#FF6B6B,color:#fff
-    style "Data Layer" fill:#0E83CD,color:#fff
+    style FE fill:#4ECB8B,color:#fff
+    style BE fill:#009688,color:#fff
+    style AI fill:#FF6B6B,color:#fff
+    style DL fill:#0E83CD,color:#fff
 ```
 
 ### 🧩 核心技术栈
