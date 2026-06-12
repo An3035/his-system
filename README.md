@@ -42,9 +42,13 @@
 | 维度 | 说明 |
 |------|------|
 | 🏢 **业务管理** | 15个业务模块，覆盖门诊、住院、药房、收费、护理等全流程 |
+| 👥 **双端门户** | 医护管理端 + 患者自助端双入口，权限完全隔离，路由守卫拦截 |
+| 💰 **智能收费** | 统一收费主表，全品类费用统计，自动对账，异常金额检测 |
+| 🎤 **语音交互** | 医疗场景语音识别，支持挂号、处方等场景快速语音录入 |
 | 🤖 **AI引擎** | 5个AI智能体协同工作：路由→问诊→医学→科普→工具 |
 | 📚 **知识库** | RAG架构，支持PDF/DOCX/TXT多格式文档上传与智能检索 |
 | 🎯 **自然语言** | 支持中文自然语言查询，如"今天挂了几个号？"、"阿莫西林库存多少？" |
+
 
 ---
 
@@ -66,6 +70,49 @@
 | 👩‍⚕️ **护士工作站** | 患者护理 · 体温单 · 医嘱执行 |
 | 📊 **院长驾驶舱** | 全院数据可视化 · 决策支持 |
 </details>
+
+### 👥 双入口角色门户系统
+
+<details>
+<summary><b>点击展开/收起</b></summary>
+
+| 模块 | 功能 |
+|------|------|
+| 🔐 **双Tab登录** | 登录页区分「医护登录」「患者入口」，独立登录逻辑 |
+| 🧾 **患者自助注册** | 手机号自主注册，自动关联患者档案，注册即登录 |
+| 📱 **患者工作台** | 我的挂号、我的处方、我的账单、就诊记录全链路追溯 |
+| 🛡️ **权限隔离** | 基于角色的路由守卫，越权访问自动重定向，杜绝IDOR风险 |
+| 🎨 **独立UI主题** | 患者端独立Layout，仅展示患者相关菜单 |
+</details>
+
+
+### 💰 智能收费重构
+
+<details>
+<summary><b>点击展开/收起</b></summary>
+
+| 模块 | 功能 |
+|------|------|
+| 📊 **统一收费主表** | 挂号/处方/住院收费统一写入 BillingRecord，数据口径唯一 |
+| 🧮 **营收自动汇总** | 首页今日收入自动统计全品类费用，解决统计不全、对账不准问题 |
+| 🔍 **智能对账校验** | 自动比对营收统计与收费明细，差异自动高亮预警 |
+| ⚠️ **异常检测** | 重复收费拦截、负数金额拦截、大额减免标红提醒 |
+| 📑 **收费历史全覆盖** | 统一展示挂号、处方、住院所有收费记录，支持类型筛选与实时汇总 |
+</details>
+
+### 🎤 医疗语音识别
+
+<details>
+<summary><b>点击展开/收起</b></summary>
+
+| 模块 | 功能 |
+|------|------|
+| 🎙️ **语音转文字录入** | 挂号、处方、病历场景支持语音输入，提升医护办公效率 |
+| 🏥 **医疗术语优化** | 适配药品名、科室名、诊断术语等医疗场景精准识别 |
+| ⚡ **实时转写** | 边说边转，无需等待，支持纠错与手动修正 |
+| 🔇 **环境降噪适配** | 适配医院嘈杂环境，保证识别准确率 |
+</details>
+
 
 ### 🤖 AI 多智能体引擎
 
@@ -108,15 +155,17 @@ graph TB
         direction TB
         EP[Element Plus]
         EC[ECharts]
-        Router[Vue Router]
+        Router[Vue Router + 角色守卫]
+        Voice[语音识别模块]
     end
     
     subgraph BE["⚙️ Backend (FastAPI)"]
         direction TB
         API[API Layer]
-        Auth[JWT Auth]
-        RBAC[RBAC]
+        Auth[JWT Auth + 双端认证]
+        RBAC[RBAC 角色权限]
         Audit[Audit Log]
+        Billing[统一收费对账引擎]
     end
     
     subgraph AI["🤖 AI Engine"]
@@ -124,6 +173,7 @@ graph TB
         LG[LangGraph]
         LC[LangChain]
         BA[Balian LLM]
+        ASR[语音识别服务]
     end
     
     subgraph DL["🗄️ Data Layer"]
@@ -133,11 +183,29 @@ graph TB
         QD[(Qdrant Vector DB)]
     end
     
-    EP & EC & Router --> API
-    API --> Auth & RBAC
-    API --> LG & LC & BA
-    LG & LC & BA --> SQL & RD & QD
-    API --> SQL & RD
+    EP --> API
+    EC --> API
+    Router --> API
+    Voice --> API
+    API --> Auth
+    API --> RBAC
+    API --> Billing
+    API --> LG
+    API --> LC
+    API --> BA
+    API --> ASR
+    LG --> SQL
+    LG --> RD
+    LG --> QD
+    LC --> SQL
+    LC --> RD
+    LC --> QD
+    BA --> SQL
+    BA --> RD
+    BA --> QD
+    API --> SQL
+    API --> RD
+    
     
     style FE fill:#4ECB8B,color:#fff
     style BE fill:#009688,color:#fff
@@ -155,7 +223,7 @@ graph TB
 |------|------|------|
 | 🎨 **前端** | Vue 3 + Vite + TypeScript + Element Plus + ECharts | 管理界面与数据可视化 |
 | ⚙️ **后端** | Python 3.11 + FastAPI + SQLAlchemy 2.0 + Alembic | RESTful API 与数据库迁移 |
-| 🤖 **AI** | LangChain 0.2+ / LangGraph 0.1+ / Dashscope (通义千问) | 多智能体编排与LLM调用 |
+| 🤖 **AI** | LangChain 0.2+ / LangGraph 0.1+ / Dashscope (通义千问) / 语音 ASR| 多智能体编排与LLM调用 |
 | 🗄️ **数据库** | MySQL 8.0 + Redis 7.0 + Qdrant (HNSW索引) | 关系数据/缓存/向量检索 |
 | 🐳 **部署** | Docker + Docker Compose + uv | 容器化编排与包管理 |
 
@@ -229,7 +297,6 @@ his-system/
 │   │   ├── components/      # 公共组件
 │   │   └── router/          # 路由配置
 │   └── ...
-├── alembic/                 # 数据库迁移
 ├── docker-compose.yml       # Docker 编排
 ├── pyproject.toml            # 项目配置 & 依赖
 └── CLAUDE.md                # Claude Code 指令
