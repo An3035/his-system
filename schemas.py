@@ -38,6 +38,7 @@ class UserOut(BaseModel):
     real_name: str
     role: str
     department_id: Optional[int] = None
+    patient_id: Optional[int] = None  # 患者角色用户关联的 Patient ID
 
 
 # ── 患者 ─────────────────────────────────────────────────────
@@ -58,6 +59,69 @@ class PatientOut(PatientCreate):
     id: int
     patient_no: str
     created_at: datetime
+
+
+# ── 患者自助注册 ──────────────────────────────────────────────────
+
+
+class PatientRegisterRequest(BaseModel):
+    """患者自助注册请求"""
+    name: str
+    gender: str = "男"
+    phone: str
+    id_card: Optional[str] = None
+    password: str  # 登录密码
+    birth_date: Optional[date] = None
+
+
+class PatientSelfOut(BaseModel):
+    """患者端个人信息输出"""
+    id: int
+    patient_no: str
+    name: str
+    gender: str
+    birth_date: Optional[date] = None
+    phone: Optional[str] = None
+    id_card: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class PatientRegSelfOut(BaseModel):
+    """患者端挂号记录输出"""
+    id: int
+    reg_no: str
+    reg_type: str
+    reg_fee: str
+    payment_status: str
+    reg_date: Optional[datetime] = None
+    visit_date: Optional[date] = None
+    department_name: str = ""
+    doctor_name: str = ""
+
+
+class PatientPresSelfOut(BaseModel):
+    """患者端处方输出"""
+    id: int
+    pres_no: str
+    pres_type: str
+    total_amount: str
+    payment_status: str
+    dispensed: bool
+    created_at: Optional[datetime] = None
+    diagnosis: Optional[str] = None
+    items: list = []  # [{drug_name, quantity, unit, amount}]
+
+
+class PatientBillSelfOut(BaseModel):
+    """患者端账单输出"""
+    id: int
+    bill_no: str
+    charge_type: str
+    ref_no: str = ""
+    total_amount: str
+    paid_amount: str
+    charge_time: Optional[datetime] = None
+    status: str
 
 
 # ── 挂号 ─────────────────────────────────────────────────────
@@ -307,16 +371,87 @@ class PrescriptionCheckRequest(BaseModel):
     items: List[PrescriptionCheckItem]
 
 
+# ── 语音识别 (ASR) ────────────────────────────────────────────────
+
+
+class AsrResponse(BaseModel):
+    text: str
+    duration: Optional[float] = None
+    error: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ── 统计报表 ─────────────────────────────────────────────────
 
 
 class DashboardStats(BaseModel):
     today_registrations: int
     today_revenue: Decimal
+    today_reg_revenue: Decimal = Decimal("0")    # 挂号费收入
+    today_pres_revenue: Decimal = Decimal("0")   # 处方费收入
+    today_adm_revenue: Decimal = Decimal("0")    # 住院结算收入
     inpatients: int
     available_beds: int
     low_stock_drugs: int
     pending_orders: int
+
+
+# ── 统一收费主表 ─────────────────────────────────────────────────
+
+
+class BillingRecordOut(BaseModel):
+    """收费历史记录输出"""
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    bill_no: str
+    charge_type: str  # 挂号收费 / 门诊处方 / 住院结算
+    source_id: int
+    patient_id: int
+    patient_name: Optional[str] = None
+    patient_no: Optional[str] = None
+    gender: Optional[str] = None
+    age: Optional[int] = None
+    total_amount: Decimal
+    paid_amount: Decimal
+    operator_name: Optional[str] = None
+    charge_time: datetime
+    status: str
+    remark: Optional[str] = None
+    ref_no: Optional[str] = None  # 业务单号（reg_no / pres_no / admission_no）
+
+
+class PendingChargeOut(BaseModel):
+    """待收费项目输出（统一格式，兼容前端 ChargeItem）"""
+    id: int
+    type: str  # registration / prescription / admission
+    charge_type_label: str  # 挂号收费 / 门诊处方 / 住院结算
+    no: str  # 业务单号
+    patient_id: int
+    patient_no: str = ""
+    patient_name: str = ""
+    gender: Optional[str] = None
+    age: Optional[int] = None
+    total_amount: Decimal
+    pay_amount: Decimal
+    deposit: Decimal = Decimal("0")
+    created_at: Optional[datetime] = None
+
+
+class ReconciliationResult(BaseModel):
+    """智能对账结果"""
+    date: str
+    dashboard_total: Decimal
+    billing_total: Decimal
+    difference: Decimal
+    matched: bool
+    details: list = Field(default_factory=list)  # 差异明细
+
+
+class BillingSummary(BaseModel):
+    """收费汇总"""
+    total_amount: Decimal = Decimal("0")
+    count: int = 0
+    by_type: dict = Field(default_factory=dict)  # {"挂号收费": amount, ...}
 
 
 # ── 审计日志 ─────────────────────────────────────────────────

@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  # 你的核心服务：医院信息系统（前后端一体）
+  his-system:
+    build: .                     # 用当前目录的 Dockerfile 构建镜像
+    container_name: his-system
+    ports:
+      - "8000:8000"             # 映射本地8000端口到容器内8000端口
+    depends_on:
+      - redis                   # 依赖Redis，确保Redis先启动
+    restart: always             # 自动重启（崩溃/重启电脑都会恢复）
+    environment:
+      # 把你的环境变量放这里，比如API Key、数据库配置，不用硬编码
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - REDIS_HOST=redis        # Docker Compose里，服务名就是主机名，所以Redis地址写redis
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8000
+
+  # 原有的Redis服务（保留不动）
+  redis:
+    image: redis:7-alpine
+    container_name: his-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # 原有的Qdrant监控服务
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: his-qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis_data:
+  qdrant_data:

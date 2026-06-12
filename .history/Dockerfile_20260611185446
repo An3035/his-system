@@ -1,0 +1,18 @@
+# 用中科大公开镜像源的Python基础镜像，公开可访问，无权限限制
+FROM docker.mirrors.ustc.edu.cn/library/python:3.14-slim
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制依赖文件，用中科大pip源安装，速度快且稳定
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.ustc.edu.cn/pypi/web/simple
+
+# 复制所有项目文件（包含static前端文件夹）
+COPY . .
+
+# 暴露端口
+EXPOSE 8000
+
+# 启动命令
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

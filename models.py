@@ -128,6 +128,7 @@ class User(Base):
     real_name: Mapped[str] = mapped_column(String(50))
     role: Mapped[str] = mapped_column(String(30))  # admin/doctor/nurse/pharmacist/cashier
     department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"))
+    patient_id: Mapped[Optional[int]] = mapped_column(ForeignKey("patients.id"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime)
@@ -180,6 +181,7 @@ class Registration(Base):
         Enum(PaymentStatus), default=PaymentStatus.PENDING
     )
     reg_date: Mapped[datetime] = mapped_column(DateTime, default=now)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     visit_date: Mapped[Optional[date]] = mapped_column(Date)
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -208,6 +210,7 @@ class Prescription(Base):
     )
     dispensed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     diagnosis: Mapped[Optional[str]] = mapped_column(Text)
 
     registration: Mapped["Registration"] = relationship(back_populates="prescriptions")
@@ -336,6 +339,7 @@ class Admission(Base):
     deposit: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), default=0)
     total_fee: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), default=0)
     settled: Mapped[bool] = mapped_column(Boolean, default=False)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     diagnosis: Mapped[Optional[str]] = mapped_column(Text)
 
     patient: Mapped["Patient"] = relationship(back_populates="admissions")
@@ -442,6 +446,33 @@ class SpecialCharge(Base):
 
     order: Mapped["MedicalOrder"] = relationship()
     charge_item: Mapped["ChargeItem"] = relationship()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 收费主表（统一所有收费类型：挂号/处方/住院）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class BillingRecord(Base):
+    """统一收费主表 — 门诊挂号、处方、住院结算的收费记录均在此表"""
+
+    __tablename__ = "billing_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bill_no: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    charge_type: Mapped[str] = mapped_column(String(20), nullable=False)  # 挂号收费/门诊处方/住院结算
+    source_id: Mapped[int] = mapped_column(Integer, nullable=False)  # FK to source table PK
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), default=0)
+    paid_amount: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), default=0)
+    operator_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    charge_time: Mapped[datetime] = mapped_column(DateTime, default=now)
+    status: Mapped[str] = mapped_column(String(20), default="已收")  # 已收/已退
+    remark: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    patient: Mapped["Patient"] = relationship()
+    operator: Mapped["User"] = relationship()
 
 
 # ═══════════════════════════════════════════════════════════════════════

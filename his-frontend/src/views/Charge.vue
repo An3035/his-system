@@ -33,10 +33,12 @@
             stripe
             style="width: 100%"
           >
-            <el-table-column prop="type" label="类型" width="90">
+            <el-table-column prop="charge_type_label" label="类型" width="100">
               <template #default="{ row }">
-                <el-tag :type="row.type === 'prescription' ? 'primary' : 'success'">
-                  {{ row.type === 'prescription' ? '门诊处方' : '住院结算' }}
+                <el-tag
+                  :type="row.type === 'registration' ? 'warning' : row.type === 'prescription' ? 'primary' : 'success'"
+                >
+                  {{ row.charge_type_label }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -64,7 +66,11 @@
                 {{ row.age != null ? row.age + '岁' : '-' }}
               </template>
             </el-table-column>
-            <el-table-column prop="total_amount" label="总金额(元)" width="110" />
+            <el-table-column label="总金额(元)" width="110">
+              <template #default="{ row }">
+                {{ row.total_amount }}
+              </template>
+            </el-table-column>
             <el-table-column label="押金(元)" width="90" v-if="hasAdmissionType">
               <template #default="{ row }">
                 {{ row.type === 'admission' ? row.deposit : '-' }}
@@ -97,6 +103,19 @@
       <el-tab-pane label="收费历史" name="history">
         <el-card class="search-card">
           <el-form :inline="true" :model="historyQuery" class="search-form">
+            <el-form-item label="收费类型">
+              <el-select
+                v-model="historyQuery.charge_type"
+                placeholder="全部类型"
+                clearable
+                style="width: 140px"
+              >
+                <el-option label="全部" value="" />
+                <el-option label="挂号收费" value="挂号收费" />
+                <el-option label="门诊处方" value="门诊处方" />
+                <el-option label="住院结算" value="住院结算" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="患者姓名">
               <el-input
                 v-model="historyQuery.patient_name"
@@ -127,6 +146,21 @@
           </el-form>
         </el-card>
 
+        <!-- 汇总栏 -->
+        <el-card class="summary-card" v-if="historySummary">
+          <div class="summary-row">
+            <span class="summary-label">当前筛选汇总：</span>
+            <span class="summary-total">共 {{ historySummary.count }} 条，合计 ¥{{ historySummary.total_amount.toFixed(2) }}</span>
+            <span class="summary-breakdown" v-if="historySummary.by_type">
+              <template v-for="(amount, type) in historySummary.by_type" :key="type">
+                <el-tag size="small" style="margin-left: 8px">
+                  {{ type }}: ¥{{ Number(amount).toFixed(2) }}
+                </el-tag>
+              </template>
+            </span>
+          </div>
+        </el-card>
+
         <el-card class="table-card">
           <el-table
             v-loading="historyLoading"
@@ -135,14 +169,16 @@
             stripe
             style="width: 100%"
           >
-            <el-table-column prop="type" label="类型" width="90">
+            <el-table-column prop="charge_type" label="类型" width="100">
               <template #default="{ row }">
-                <el-tag :type="row.type === 'prescription' ? 'primary' : 'success'">
-                  {{ row.type === 'prescription' ? '门诊处方' : '住院结算' }}
+                <el-tag
+                  :type="row.charge_type === '挂号收费' ? 'warning' : row.charge_type === '门诊处方' ? 'primary' : 'success'"
+                >
+                  {{ row.charge_type }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="no" label="单号" width="150" />
+            <el-table-column prop="ref_no" label="单号" width="150" />
             <el-table-column prop="patient_no" label="患者编号" width="120" />
             <el-table-column label="患者姓名" width="100">
               <template #default="{ row }">
@@ -166,9 +202,25 @@
                 {{ row.age != null ? row.age + '岁' : '-' }}
               </template>
             </el-table-column>
-            <el-table-column prop="total_amount" label="总金额(元)" width="110" />
-            <el-table-column prop="paid_amount" label="实付金额(元)" width="110" />
-            <el-table-column prop="charge_time" label="收费时间" width="160">
+            <el-table-column label="总金额(元)" width="110">
+              <template #default="{ row }">
+                <span :class="{ 'anomaly-amount': row.paid_amount >= 5000 }">
+                  {{ row.total_amount }}
+                  <el-tag v-if="row.paid_amount >= 5000" type="danger" size="small" style="margin-left: 4px">大额</el-tag>
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="实付金额(元)" width="110">
+              <template #default="{ row }">
+                {{ row.paid_amount }}
+              </template>
+            </el-table-column>
+            <el-table-column label="收费员" width="100">
+              <template #default="{ row }">
+                {{ row.operator_name || '-' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="收费时间" width="160">
               <template #default="{ row }">
                 {{ formatDate(row.charge_time) }}
               </template>
@@ -198,8 +250,10 @@
       <div v-if="currentCharge" class="charge-info">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="类型">
-            <el-tag :type="currentCharge.type === 'prescription' ? 'primary' : 'success'">
-              {{ currentCharge.type === 'prescription' ? '门诊处方' : '住院结算' }}
+            <el-tag
+              :type="currentCharge.type === 'registration' ? 'warning' : currentCharge.type === 'prescription' ? 'primary' : 'success'"
+            >
+              {{ currentCharge.charge_type_label }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="单号">{{ currentCharge.no }}</el-descriptions-item>
@@ -241,26 +295,45 @@ import request from '../utils/request'
 import { formatDate } from '../utils/date'
 import { showSuccess, showError } from '../utils/message'
 
-interface ChargeItem {
+interface PendingItem {
   id: number
-  type: 'prescription' | 'admission'
+  type: string
+  charge_type_label: string
   no: string
+  patient_id: number
   patient_no: string
   patient_name: string
   gender?: string
   age?: number
   total_amount: number
-  deposit?: number
   pay_amount: number
-  paid_amount?: number
+  deposit: number
   created_at: string
-  charge_time?: string
+}
+
+interface HistoryItem {
+  id: number
+  bill_no: string
+  charge_type: string
+  source_id: number
+  patient_id: number
+  patient_name: string
+  patient_no: string
+  gender?: string
+  age?: number
+  total_amount: number
+  paid_amount: number
+  operator_name?: string
+  charge_time: string
+  status: string
+  ref_no?: string
 }
 
 const activeTab = ref('pending')
 
+// ── 待收费 ──
 const pendingLoading = ref(false)
-const pendingList = ref<ChargeItem[]>([])
+const pendingList = ref<PendingItem[]>([])
 const pendingTotal = ref(0)
 const pendingQuery = reactive({
   patient_name: '',
@@ -269,10 +342,13 @@ const pendingQuery = reactive({
   page_size: 10
 })
 
+// ── 收费历史 ──
 const historyLoading = ref(false)
-const historyList = ref<ChargeItem[]>([])
+const historyList = ref<HistoryItem[]>([])
 const historyTotal = ref(0)
+const historySummary = ref<{ total_amount: number; count: number; by_type: Record<string, number> } | null>(null)
 const historyQuery = reactive({
+  charge_type: '',
   patient_name: '',
   patient_no: '',
   charge_date: '',
@@ -280,128 +356,30 @@ const historyQuery = reactive({
   page_size: 10
 })
 
+// ── 收费弹窗 ──
 const chargeVisible = ref(false)
-const currentCharge = ref<ChargeItem | null>(null)
+const currentCharge = ref<PendingItem | null>(null)
 const chargeLoading = ref(false)
 
-const patientMap = ref(new Map<number, any>())
-
-// 是否有住院类型的待收费项目
 const hasAdmissionType = computed(() => {
   return pendingList.value.some(item => item.type === 'admission')
 })
 
-const loadPatientMap = async () => {
-  try {
-    const res = await request.get('/api/patients')
-    const patients = Array.isArray(res.data) ? res.data : []
-    const map = new Map<number, any>()
-    patients.forEach((p: any) => map.set(p.id, p))
-    patientMap.value = map
-  } catch (e) {
-    console.error('加载患者映射失败', e)
-  }
-}
-
-/**
- * 从 patientMap 中补充患者字段（当后端未 JOIN 返回时的兜底）
- */
-const enrichFromPatientMap = (patientId?: number) => {
-  if (!patientId) return { patient_name: '-', patient_no: '-', gender: undefined, age: undefined }
-  const p = patientMap.value.get(patientId)
-  if (!p) return { patient_name: `患者#${patientId}`, patient_no: '-', gender: undefined, age: undefined }
-  return {
-    patient_name: p.name,
-    patient_no: p.patient_no || p.no || '-',
-    gender: p.gender,
-    age: p.age
-  }
-}
-
+// ── 待收费列表 ──
 const fetchPendingList = async () => {
   pendingLoading.value = true
   try {
-    // 获取待缴费处方（取较大 page_size 以便合并后分页）
-    const presRes = await request.get('/api/prescriptions', {
+    const res = await request.get('/api/billing/pending', {
       params: {
-        payment_status: '待付',
         patient_name: pendingQuery.patient_name || undefined,
         patient_no: pendingQuery.patient_no || undefined,
-        page: 1,
-        page_size: 100
+        page: pendingQuery.page,
+        page_size: pendingQuery.page_size
       }
     })
-    const prescriptions = presRes.data.items || []
-
-    // 获取在院未结算患者（住院结算）
-    let admissions: any[] = []
-    try {
-      const admRes = await request.get('/api/admissions', {
-        params: {
-          settled: false,
-          patient_name: pendingQuery.patient_name || undefined,
-          patient_no: pendingQuery.patient_no || undefined,
-          page: 1,
-          page_size: 100
-        }
-      })
-      const data = admRes.data
-      admissions = Array.isArray(data) ? data : (data.items || [])
-    } catch {
-      admissions = []
-    }
-
-    // 合并列表，优先使用后端 JOIN 返回的 patient 对象，兜底使用 patientMap
-    const presItems: ChargeItem[] = prescriptions.map((item: any) => {
-      const fallback = enrichFromPatientMap(item.registration?.patient_id ?? item.patient_id)
-      const p = item.patient || {}
-      return {
-        id: item.id,
-        type: 'prescription' as const,
-        no: item.pres_no,
-        patient_no: p.patient_no || p.no || fallback.patient_no,
-        patient_name: p.name || fallback.patient_name,
-        gender: p.gender || fallback.gender,
-        age: p.age ?? fallback.age,
-        total_amount: Number(item.total_amount) || 0,
-        pay_amount: Number(item.total_amount) || 0,
-        created_at: item.created_at
-      }
-    })
-
-    const admItems: ChargeItem[] = admissions.map((item: any) => {
-      const fallback = enrichFromPatientMap(item.patient_id)
-      const p = item.patient || {}
-      return {
-        id: item.id,
-        type: 'admission' as const,
-        no: item.admission_no,
-        patient_no: p.patient_no || p.no || fallback.patient_no,
-        patient_name: p.name || fallback.patient_name,
-        gender: p.gender || fallback.gender,
-        age: p.age ?? fallback.age,
-        total_amount: Number(item.total_fee) || 0,
-        deposit: Number(item.deposit) || 0,
-        pay_amount: Math.max(0, (Number(item.total_fee) || 0) - (Number(item.deposit) || 0)),
-        created_at: item.admit_date
-      }
-    })
-
-    // 前端二次筛选（后端已支持参数时可省略，保留作兜底）
-    let allItems = [...presItems, ...admItems]
-    if (pendingQuery.patient_name) {
-      const q = pendingQuery.patient_name.toLowerCase()
-      allItems = allItems.filter(item => item.patient_name.toLowerCase().includes(q))
-    }
-    if (pendingQuery.patient_no) {
-      const q = pendingQuery.patient_no.toLowerCase()
-      allItems = allItems.filter(item => (item.patient_no || '').toLowerCase().includes(q))
-    }
-
-    pendingTotal.value = allItems.length
-    // 客户端分页
-    const start = (pendingQuery.page - 1) * pendingQuery.page_size
-    pendingList.value = allItems.slice(start, start + pendingQuery.page_size)
+    const data = res.data
+    pendingList.value = data.items || []
+    pendingTotal.value = data.total || 0
   } catch (err: any) {
     const detail = err.response?.data?.detail
     const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail[0]?.msg || JSON.stringify(detail) : err.message)
@@ -411,96 +389,27 @@ const fetchPendingList = async () => {
   }
 }
 
+// ── 收费历史列表 ──
 const fetchHistoryList = async () => {
   historyLoading.value = true
   try {
-    // 获取已缴费处方（取较大 page_size 以便合并后分页）
-    const presRes = await request.get('/api/prescriptions', {
-      params: {
-        payment_status: '已付',
-        patient_name: historyQuery.patient_name || undefined,
-        patient_no: historyQuery.patient_no || undefined,
-        page: 1,
-        page_size: 100
-      }
-    })
-    const prescriptions = presRes.data.items || []
-
-    // 获取已出院结算记录
-    let admissions: any[] = []
-    try {
-      const admRes = await request.get('/api/admissions', {
-        params: {
-          settled: true,
-          patient_name: historyQuery.patient_name || undefined,
-          patient_no: historyQuery.patient_no || undefined,
-          page: 1,
-          page_size: 200
-        }
-      })
-      const data = admRes.data
-      admissions = Array.isArray(data) ? data : (data.items || [])
-    } catch {
-      admissions = []
+    const params: any = {
+      page: historyQuery.page,
+      page_size: historyQuery.page_size
     }
-
-    const presItems: ChargeItem[] = prescriptions.map((item: any) => {
-      const fallback = enrichFromPatientMap(item.registration?.patient_id ?? item.patient_id)
-      const p = item.patient || {}
-      return {
-        id: item.id,
-        type: 'prescription' as const,
-        no: item.pres_no,
-        patient_no: p.patient_no || p.no || fallback.patient_no,
-        patient_name: p.name || fallback.patient_name,
-        gender: p.gender || fallback.gender,
-        age: p.age ?? fallback.age,
-        total_amount: Number(item.total_amount) || 0,
-        paid_amount: Number(item.total_amount) || 0,
-        pay_amount: Number(item.total_amount) || 0,
-        charge_time: item.paid_at || item.updated_at,
-        created_at: item.created_at
-      }
-    })
-
-    const admItems: ChargeItem[] = admissions.map((item: any) => {
-      const fallback = enrichFromPatientMap(item.patient_id)
-      const p = item.patient || {}
-      return {
-        id: item.id,
-        type: 'admission' as const,
-        no: item.admission_no,
-        patient_no: p.patient_no || p.no || fallback.patient_no,
-        patient_name: p.name || fallback.patient_name,
-        gender: p.gender || fallback.gender,
-        age: p.age ?? fallback.age,
-        total_amount: Number(item.total_fee) || 0,
-        paid_amount: Number(item.total_fee) || 0,
-        pay_amount: Number(item.total_fee) || 0,
-        charge_time: item.discharge_date,
-        created_at: item.admit_date
-      }
-    })
-
-    let allItems = [...presItems, ...admItems]
-    if (historyQuery.patient_name) {
-      const q = historyQuery.patient_name.toLowerCase()
-      allItems = allItems.filter(item => item.patient_name.toLowerCase().includes(q))
-    }
-    if (historyQuery.patient_no) {
-      const q = historyQuery.patient_no.toLowerCase()
-      allItems = allItems.filter(item => (item.patient_no || '').toLowerCase().includes(q))
-    }
+    if (historyQuery.charge_type) params.charge_type = historyQuery.charge_type
+    if (historyQuery.patient_name) params.patient_name = historyQuery.patient_name
+    if (historyQuery.patient_no) params.patient_no = historyQuery.patient_no
     if (historyQuery.charge_date) {
-      allItems = allItems.filter(item => {
-        const t = item.charge_time || ''
-        return t.startsWith(historyQuery.charge_date)
-      })
+      params.start_date = historyQuery.charge_date
+      params.end_date = historyQuery.charge_date
     }
 
-    historyTotal.value = allItems.length
-    const start = (historyQuery.page - 1) * historyQuery.page_size
-    historyList.value = allItems.slice(start, start + historyQuery.page_size)
+    const res = await request.get('/api/billing/history', { params })
+    const data = res.data
+    historyList.value = data.items || []
+    historyTotal.value = data.total || 0
+    historySummary.value = data.summary || null
   } catch (err: any) {
     const detail = err.response?.data?.detail
     const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail[0]?.msg || JSON.stringify(detail) : err.message)
@@ -528,6 +437,7 @@ const handleHistorySearch = () => {
 }
 
 const handleHistoryReset = () => {
+  historyQuery.charge_type = ''
   historyQuery.patient_name = ''
   historyQuery.patient_no = ''
   historyQuery.charge_date = ''
@@ -543,7 +453,7 @@ const handleTabChange = (tab: string) => {
   }
 }
 
-const handleCharge = (row: ChargeItem) => {
+const handleCharge = (row: PendingItem) => {
   currentCharge.value = row
   chargeVisible.value = true
 }
@@ -552,7 +462,9 @@ const confirmCharge = async () => {
   if (!currentCharge.value) return
   chargeLoading.value = true
   try {
-    if (currentCharge.value.type === 'prescription') {
+    if (currentCharge.value.type === 'registration') {
+      await request.patch(`/api/registrations/${currentCharge.value.id}/pay`)
+    } else if (currentCharge.value.type === 'prescription') {
       await request.patch(`/api/prescriptions/${currentCharge.value.id}/pay`)
     } else {
       await request.patch(`/api/admissions/${currentCharge.value.id}/discharge`)
@@ -561,16 +473,20 @@ const confirmCharge = async () => {
     chargeVisible.value = false
     fetchPendingList()
   } catch (err: any) {
-    showError('收费结算失败：' + (err.response?.data?.detail || err.message))
+    const status = err.response?.status
+    const detail = err.response?.data?.detail
+    if (status === 409) {
+      showError(detail || '该记录已收费，不可重复收费')
+    } else {
+      showError('收费结算失败：' + (detail || err.message))
+    }
   } finally {
     chargeLoading.value = false
   }
 }
 
 onMounted(() => {
-  loadPatientMap().then(() => {
-    fetchPendingList()
-  })
+  fetchPendingList()
 })
 </script>
 
@@ -593,6 +509,36 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
+.summary-card {
+  margin-bottom: 16px;
+  background: #f0f9eb;
+  border-color: #b3e19d;
+}
+
+.summary-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.summary-label {
+  font-weight: 600;
+  color: #606266;
+}
+
+.summary-total {
+  font-size: 16px;
+  font-weight: 700;
+  color: #67c23a;
+}
+
+.summary-breakdown {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .pagination {
   margin-top: 16px;
   display: flex;
@@ -612,5 +558,10 @@ onMounted(() => {
 .amount {
   color: #f56c6c;
   font-size: 24px;
+}
+
+.anomaly-amount {
+  color: #f56c6c;
+  font-weight: 600;
 }
 </style>

@@ -1,0 +1,36 @@
+FROM python:3.10-slim
+
+# 安装系统依赖（一次性解决所有问题）
+# build-essential: C/C++编译工具链（编译grpcio、bcrypt等包）
+# python3-dev: Python开发头文件
+# ffmpeg: 音频/视频转码
+# libsndfile1: 音频文件读取
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3-dev \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*  # 清理缓存，减小镜像体积
+
+# 安装 uv（比pip快10-100倍，官方推荐的安装方式）
+RUN pip install --no-cache-dir uv
+
+# 设置工作目录
+WORKDIR /app
+
+# 先复制依赖文件，利用Docker分层缓存，下次构建依赖不变时直接复用
+COPY pyproject.toml uv.lock ./
+
+# 安装生产依赖
+# --no-dev: 不安装开发依赖（如pytest、black等）
+# --frozen: 严格使用uv.lock里的版本，和本地环境完全一致
+RUN uv sync --no-dev --frozen
+
+# 最后复制项目代码（代码变了才会重新执行这一步）
+COPY . .
+
+# 暴露端口
+EXPOSE 8000
+
+# 启动命令（uv run自动激活虚拟环境，不用手动处理）
+CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

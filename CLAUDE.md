@@ -612,3 +612,268 @@ send()
 | `schemas.py` | 修改 | 新增 AiSessionOut/AiSessionDetailOut/SessionRenameRequest/BatchDeleteRequest；AiChatRequest/Response 增加 session_id |
 | `routers.py` | 修改 | /api/ai/chat 支持 session_id + 后台异步生成标题；新增 5 个会话管理端点 + 分页 |
 | `his-frontend/src/views/AiChat.vue` | 重写 | 会话侧栏折叠/搜索/分页、复选框常显、内联重命名、删除 loading
+
+
+### 2026-06-07 — 全局语音输入（按住空格说话）
+
+**新增API端点：**
+
+| 方法 | 路径 | 功能 | 角色 |
+|------|------|------|------|
+| POST | `/api/ai/asr` | 语音识别：接收WebM音频，返回识别文本 | 所有登录用户 |
+
+**新增Schema：**
+- `AsrResponse` — { text: str, duration: Optional[float] }
+
+**新增后端函数：**
+- `ai_service.py` → `asr_transcribe(audio_data, filename)` — 调用阿里云百炼 Paraformer（`dashscope.audio.asr.Recognition`），写入临时WAV文件后识别
+
+**前端新增组件：**
+
+1. **VoiceInput.vue**（`his-frontend/src/components/VoiceInput.vue`）
+   - 全局挂载于 `App.vue`，无侵入，不破坏任何现有功能
+   - 按住空格键 → 自动检测当前聚焦输入框 → 开始录音
+   - 松开空格 → 停止录音 → 发送到 `/api/ai/asr` → 文本自动填入光标位置
+   - 录音时输入框下方显示动态波形条纹（CSS动画，高度随实时音量变化）
+   - 录音中切换焦点输入框自动跟随
+   - 优雅降级：浏览器不支持 MediaRecorder 时静默禁用
+   - 零新 npm 依赖（浏览器原生 MediaRecorder + AudioContext）
+
+2. **工具函数** `utils/request.ts` → `asrRecognize(audioBlob)` — FormData 上传音频
+
+**技术细节：**
+- 音频格式：WebM（16kHz 单声道），通过浏览器 MediaRecorder API 采集
+- 音量分析：AudioContext + AnalyserNode（fftSize=256），每80ms采样
+- 最短录音时长 0.5s，最长 60s（自动截断）
+- 错误处理：权限拒绝/无麦克风/网络错误/识别失败均有中文提示
+
+**使用方式：**
+- 任何页面的任何输入框聚焦 → 按住空格说话 → 松开即填入
+- Element Plus 的 el-input/el-textarea 自动兼容（组件内部查询 `.el-input input` 选择器）
+
+**涉及文件：**
+
+| 文件 | 变更类型 | 说明 |
+|------|---------|------|
+| `schemas.py` | 修改 | 新增 `AsrResponse` |
+| `ai_service.py` | 修改 | 新增 `asr_transcribe()` + 导入 `Recognition`/`tempfile` |
+| `routers.py` | 修改 | 新增 `POST /api/ai/asr` 端点 + 导入 `File`/`asr_transcribe` |
+| `his-frontend/src/utils/request.ts` | 修改 | 新增 `asrRecognize()` |
+| `his-frontend/src/components/VoiceInput.vue` | 新增 | 全局语音输入组件 |
+| `his-frontend/src/App.vue` | 修改 | 注册 VoiceInput 组件 |
+
+
+### 2026-06-12 — 收费模块统一修复与智能增强
+
+**核心问题：**
+1. 首页「今日收入」仅统计挂号费（15元），未包含处方收费（114.45元），实际应为 129.45 元
+2. 「收费历史」列表缺失挂号费记录，就诊-收费全链路无法追溯（挂号→处方→结算不连贯）
+
+**解决方案：** 新增统一收费主表 `BillingRecord`，所有支付操作（挂号缴费、处方缴费、出院结算）事务性写入该表，看板统计、收费历史、待收费列表均从此表统一查询。
+
+---
+
+**新增数据模型：**
+
+- `BillingRecord` (billing_records) — 统一收费主表
+  - `bill_no` — 收费单号（UNIQUE，格式 BILL20260612XXXXXX）
+  - `charge_type` — 收费类型：`"挂号收费"` / `"门诊处方"` / `"住院结算"`
+  - `source_id` — 源表主键（registrations.id / prescriptions.id / admissions.id）
+  - `patient_id` — FK → patients.id
+  - `total_amount` / `paid_amount` — 总金额 / 实付金额（DECIMAL(10,2)）
+  - `operator_id` — FK → users.id（收费员）
+  - `charge_time` — 实际收费时间
+  - `status` — `"已收"` / `"已退"`
+  - `remark` — 备注（自动记录业务单号）
+
+**现有模型新增字段：**
+- `Registration.paid_at` — 挂号缴费时间（nullable DateTime）
+- `Prescription.paid_at` — 处方缴费时间（nullable DateTime）
+- `Admission.paid_at` — 住院结算时间（nullable DateTime）
+
+---
+
+**新增 API 端点（billing_router，prefix=`/api/billing`）：**
+
+| 方法 | 路径 | 功能 | 角色 |
+|------|------|------|------|
+| GET | `/api/billing/history` | 统一收费历史查询（含挂号+处方+住院），支持按类型/患者/日期筛选，自动返回汇总金额 | 所有登录用户 |
+| GET | `/api/billing/pending` | 统一待收费列表（UNION 挂号PENDING + 处方PENDING + 住院未结算） | 所有登录用户 |
+| GET | `/api/billing/timeline/{patient_id}` | 患者全链路收费追溯，按时间线排序 | 所有登录用户 |
+| GET | `/api/billing/reconciliation` | 智能对账：比较统一收费表 vs 各源表汇总，标记差异 | admin |
+| GET | `/api/billing/anomalies` | 异常检测：大额收费(≥5000)、实付与总额不符、可疑重复 | admin |
+
+---
+
+**修改 API 端点（支付端点增加 BillingRecord 写穿透）：**
+
+| 端点 | 变更 |
+|------|------|
+| `PATCH /api/registrations/{id}/pay` | 增加 `paid_at` 赋值 + 写入 BillingRecord(charge_type="挂号收费") + 重复收费 409 检测；参数改为 `current_user` 记录操作人 |
+| `PATCH /api/prescriptions/{id}/pay` | 增加 `paid_at` 赋值 + 写入 BillingRecord(charge_type="门诊处方") + SELECTINLOAD registration 获取 patient_id + 重复收费 409 检测 |
+| `PATCH /api/admissions/{id}/discharge` | 增加 `paid_at` 赋值 + 写入 BillingRecord(charge_type="住院结算") + 重复结算 409 检测 |
+| `GET /api/director/dashboard` | `today_revenue` 改为从 BillingRecord 按日期聚合；新增 `today_reg_revenue` / `today_pres_revenue` / `today_adm_revenue` 拆分字段 |
+| `GET /api/director/revenue-report` | 改为从 BillingRecord 按日期聚合 |
+| `POST /api/ai/director-query` | 收入数据改为从 BillingRecord 获取 |
+
+---
+
+**新增 Schema：**
+- `BillingRecordOut` — 收费记录输出（含 patient_name/no/gender/age/ref_no）
+- `PendingChargeOut` — 待收费项输出（type / charge_type_label / no / 金额等）
+- `ReconciliationResult` — 对账结果 {date, dashboard_total, billing_total, difference, matched, details}
+- `BillingSummary` — 汇总 {total_amount, count, by_type}
+- `DashboardStats` 扩展 — 新增 `today_reg_revenue`, `today_pres_revenue`, `today_adm_revenue`（默认 0，向后兼容）
+
+---
+
+**前端变更：**
+
+1. **Charge.vue — 全面重构**
+   - 待收费 Tab：调用 `/api/billing/pending`（单一端点），新增「挂号收费」类型（橙色 warning tag）
+   - 收费历史 Tab：调用 `/api/billing/history`（单一端点），新增：
+     - 收费类型筛选下拉框（全部/挂号收费/门诊处方/住院结算）
+     - 列表顶部绿色汇总栏：显示当前筛选结果的总金额 + 各类型分项
+     - 「挂号收费」以 warning 色 tag 展示
+     - 大额收费（≥5000）以红色高亮 + danger tag 标注
+     - `charge_time` 直接使用 `BillingRecord.charge_time`
+   - 收费弹窗：支持挂号费类型，调用 `/api/registrations/{id}/pay`
+   - 错误处理：HTTP 409 → "该记录已收费，不可重复收费"
+
+2. **Director.vue — 收入拆分展示**
+   - 今日收入卡片下新增 breakdown：`挂号 ¥X | 处方 ¥Y | 住院 ¥Z`
+   - 数据来自 DashboardStats 新增的 `today_reg_revenue` 等字段
+
+3. **Dashboard.vue — 无需改动**（`today_revenue` 自动获取修正后的汇总值）
+
+---
+
+**数据库迁移：**
+
+新建 `BillingRecord` 表（含 `bill_no` UNIQUE 约束和 `patient_id` / `charge_time` 索引），并为 `registrations` / `prescriptions` / `admissions` 分别新增 `paid_at` 列。迁移脚本需回填历史已收数据到 `billing_records` 表。
+
+```bash
+alembic revision --autogenerate -m "add billing_records and paid_at columns"
+alembic upgrade head
+```
+
+---
+
+**重复收费防护机制：**
+- 数据库层：`billing_records` 表按 `(charge_type, source_id, status)` 建立唯一约束
+- 应用层：支付端点在创建 BillingRecord 前先 SELECT 检查是否已存在，已存在则返回 409
+
+---
+
+**后续扩展指南（新增收费类型）：**
+1. 在 BillingRecord.charge_type 中使用新的类型字符串
+2. 在对应的支付端点中加入 BillingRecord 写入逻辑（参考 pay_registration 模式）
+3. 确保 source_id 指向正确的源表主键
+4. 在 `/api/billing/pending` 中 UNION 新的待收费数据源
+5. 前端 Charge.vue 的 type tag 映射中添加新类型对应的颜色
+
+---
+
+**涉及文件清单：**
+
+| 文件 | 变更类型 | 说明 |
+|------|---------|------|
+| `models.py` | 修改 | 新增 BillingRecord 模型；Registration/Prescription/Admission 增加 paid_at |
+| `schemas.py` | 修改 | 新增 BillingRecordOut / PendingChargeOut / ReconciliationResult / BillingSummary；扩展 DashboardStats |
+| `routers.py` | 修改 | 新增 billing_router（5个端点）；修改 3 个支付端点（写穿透）；修改 dashboard/revenue-report/director-query |
+| `main.py` | 修改 | 注册 billing_router |
+| `his-frontend/src/views/Charge.vue` | 重写 | 统一收费端点 + 挂号类型 + 筛选汇总 + 大额标注 |
+| `his-frontend/src/views/Director.vue` | 修改 | 今日收入拆分展示 |
+
+
+### 2026-06-12 — 双入口门户：患者自助端 + 登录页重构
+
+**背景：** 系统原仅面向医护人员，登录页只有三种快速登录方式。现将系统定位为医护+患者共用平台，采用双入口架构（同一后端，两套前端 Layout）。
+
+---
+
+**数据模型变更：**
+
+- `User` 新增 `patient_id` — FK → patients.id（nullable，仅 role="patient" 时有关联）
+
+---
+
+**新增 API 端点：**
+
+| 方法 | 路径 | 功能 | 角色 |
+|------|------|------|------|
+| POST | `/api/auth/patient-register` | 患者自助注册（创建 Patient + User，注册即登录返回 token） | 无需登录 |
+| GET | `/api/patient-self/profile` | 获取当前患者基本信息 | patient |
+| GET | `/api/patient-self/registrations` | 我的挂号记录 | patient |
+| GET | `/api/patient-self/prescriptions` | 我的处方记录（含药品明细） | patient |
+| GET | `/api/patient-self/bills` | 我的账单（从统一收费主表查询） | patient |
+| GET | `/api/patient-self/timeline` | 就诊时间线（挂号+处方+账单合并排序） | patient |
+
+**患者自助 API 安全约束：**
+- 所有 `/api/patient-self/*` 端点强制 `require_role("patient")` + 数据归属校验
+- 患者只能查看 `patient_id` 与自身关联的数据，不可跨患者查询
+- `GET /api/auth/me` 返回增加 `role` 和 `patient_id`，前端据此判断跳转路径
+
+---
+
+**前端架构变更：**
+
+1. **Login.vue — 双入口 Tab 切换**
+   - 顶部双 Tab：「🩺 医护登录」/「👤 患者入口」
+   - 医护 Tab：保留原有用户名+密码+快速登录按钮
+   - 患者 Tab：手机号+密码登录模式 +「立即注册」展开注册表单（姓名/性别/身份证/密码）
+   - 注册即登录，自动跳转患者端
+   - 登录后根据 role 分流：`patient` → `/patient`，其他 → `/index`
+
+2. **PatientIndex.vue — 患者端 Layout（新建）**
+   - 蓝绿色温暖调侧边栏，菜单项：
+     - 🏠 首页概览 (`/patient/dashboard`)
+     - 📋 我的挂号 (`/patient/registrations`)
+     - 📝 我的处方 (`/patient/prescriptions`)
+     - 💰 我的账单 (`/patient/bills`)
+     - 🤖 AI 健康助手 (`/patient/aichat`)
+   - 复用 Index.vue 的 Layout 结构，样式独立
+
+3. **患者端页面（4个新建 SFC）：**
+
+| 文件 | 路由 | 功能 |
+|------|------|------|
+| `PatientDashboard.vue` | `/patient/dashboard` | 个人信息卡片 + 快捷统计 + 近期就诊时间线 |
+| `PatientRegistrations.vue` | `/patient/registrations` | 挂号记录列表（科室/医生/状态/费用） |
+| `PatientPrescriptions.vue` | `/patient/prescriptions` | 处方列表（药品明细/收费/发药状态） |
+| `PatientBills.vue` | `/patient/bills` | 账单列表（类型/金额/状态/时间）+ 合计金额 |
+
+4. **路由变更（`router/index.ts`）：**
+   - 新增 `/patient` 路由组（PatientIndex layout + 5 子路由）
+   - 路由守卫按 `role` 隔离：患者访问 `/index/*` → 重定向 `/patient`；医护访问 `/patient/*` → 重定向 `/index`
+
+---
+
+**角色体系（更新后）：**
+
+| 角色 | 登录后入口 | 权限范围 |
+|------|-----------|---------|
+| `admin` | `/index` | 全部功能 |
+| `doctor` | `/index` | 患者管理/挂号/处方/AI助手 |
+| `nurse` | `/index` | 患者管理/住院管理/护士工作站 |
+| `cashier` | `/index` | 患者管理/挂号/收费管理 |
+| `pharmacist` | `/index` | 药品/药房/药库/医嘱发药/AI助手 |
+| `patient` | `/patient` | **仅**：我的信息/挂号/处方/账单/AI助手 |
+
+---
+
+**涉及文件清单：**
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `models.py` | 修改 | User 增加 `patient_id` FK |
+| `schemas.py` | 修改 | 新增 PatientRegisterRequest + 患者自助输出 schemas；UserOut 增加 patient_id |
+| `routers.py` | 修改 | 新增 POST /api/auth/patient-register + patient_self_router（5端点） |
+| `main.py` | 修改 | 注册 patient_self_router |
+| `his-frontend/src/views/Login.vue` | 重写 | 双入口 Tab + 患者注册表单 |
+| `his-frontend/src/views/PatientIndex.vue` | **新建** | 患者端 Layout |
+| `his-frontend/src/views/PatientDashboard.vue` | **新建** | 患者首页 |
+| `his-frontend/src/views/PatientRegistrations.vue` | **新建** | 我的挂号 |
+| `his-frontend/src/views/PatientPrescriptions.vue` | **新建** | 我的处方 |
+| `his-frontend/src/views/PatientBills.vue` | **新建** | 我的账单 |
+| `his-frontend/src/router/index.ts` | 修改 | 新增患者端路由 + 角色隔离守卫 |

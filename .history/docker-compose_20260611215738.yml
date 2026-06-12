@@ -1,0 +1,96 @@
+# ==============================================================
+# HIS 系统 Docker Compose 编排
+# 启动: docker-compose up -d
+# 停止: docker-compose down
+# ==============================================================
+services:
+
+  # ── MySQL 8.0 ───────────────────────────────────────────────
+  # 原来的 his-mysql 配置，直接恢复这个版本即可
+  his-mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: his_db
+      MYSQL_USER: his_user
+      MYSQL_PASSWORD: 123456
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      # 这里只保留 test/interval/timeout/retries/start_period，不要加 environment！
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ── Redis 7 ─────────────────────────────────────────────────
+  his-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Qdrant 向量数据库 ───────────────────────────────────────
+  his-qdrant:
+    image: qdrant/qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── HIS 主服务 ──────────────────────────────────────────────
+  his-system:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+
+    # 环境变量：先加载 .env（含 SECRET_KEY/DASHSCOPE_API_KEY 等），
+    # 再用 environment 覆盖 Docker 内网地址
+    env_file:
+      - .env
+    environment:
+      # 覆盖 Docker 网络内的服务地址（覆盖 .env 中的 localhost 值）
+      APP_HOST: "0.0.0.0"
+      DB_HOST: his-mysql
+      REDIS_URL: redis://his-redis:6379/0
+      QDRANT_HOST: his-qdrant
+
+    depends_on:
+      his-mysql:
+        condition: service_healthy
+      his-redis:
+        condition: service_healthy
+      his-qdrant:
+        condition: service_healthy
+
+# ── 命名卷（数据持久化）───────────────────────────────────────
+volumes:
+  mysql_data:
+    name: his_mysql_data
+  redis_data:
+    name: his_redis_data
+  qdrant_data:
+    name: his_qdrant_data

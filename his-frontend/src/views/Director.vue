@@ -11,6 +11,11 @@
       <el-card class="stat-card">
         <div class="stat-value">¥ {{ stats.today_revenue }}</div>
         <div class="stat-label">今日收入</div>
+        <div class="stat-breakdown" v-if="stats.today_revenue > 0">
+          <span>挂号 ¥{{ stats.today_reg_revenue || 0 }}</span>
+          <span>处方 ¥{{ stats.today_pres_revenue || 0 }}</span>
+          <span>住院 ¥{{ stats.today_adm_revenue || 0 }}</span>
+        </div>
       </el-card>
       <el-card class="stat-card">
         <div class="stat-value">{{ stats.inpatients }}</div>
@@ -103,6 +108,9 @@ import { showError } from '../utils/message'
 const stats = ref({
   today_registrations: 0,
   today_revenue: 0,
+  today_reg_revenue: 0,
+  today_pres_revenue: 0,
+  today_adm_revenue: 0,
   inpatients: 0,
   available_beds: 0,
   low_stock_drugs: 0,
@@ -320,6 +328,19 @@ onUnmounted(() => {
 .stat-label {
   font-size: 14px;
   color: #606266;
+}
+
+.stat-breakdown {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #909399;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+.stat-breakdown span {
+  white-space: nowrap;
 }
 
 .charts-row {

@@ -1,0 +1,56 @@
+services:
+  # 先确保你有MySQL服务
+  his-mysql:
+  image: mysql:8.0
+  restart: unless-stopped
+  environment:
+    MYSQL_ROOT_PASSWORD: 123456
+    MYSQL_DATABASE: his_db
+    MYSQL_USER: his_user
+    MYSQL_PASSWORD: 123456
+    # 添加这一行，允许root用户从任何IP地址连接
+    MYSQL_ROOT_HOST: "%"
+  ports:
+    - "3306:3306"
+  volumes:
+    - mysql_data:/var/lib/mysql
+  # 添加这个命令，强制MySQL创建允许远程连接的用户
+  command: --default-authentication-plugin=mysql_native_password
+
+  # Redis和Qdrant保持不变
+  his-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  his-qdrant:
+    image: qdrant/qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # 你的主应用
+  his-system:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      - his-mysql
+      - his-redis
+      - his-qdrant
+    # 这里添加环境变量，覆盖本地.env的配置
+    environment:
+      - DB_HOST=his-mysql  # 容器间用服务名访问
+      - REDIS_URL=redis://his-redis:6379
+      - QDRANT_URL=http://his-qdrant:6333
+
+volumes:
+  mysql_data:
+  redis_data:
+  qdrant_data:

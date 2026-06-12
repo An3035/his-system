@@ -8,6 +8,9 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+
+# ========== 新增：导入静态文件组件 ==========
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -18,6 +21,7 @@ from routers import (
     ai_router,
     audit_router,
     auth_router,
+    billing_router,
     charge_router,
     director_router,
     drug_router,
@@ -26,9 +30,18 @@ from routers import (
     nurse_router,
     order_router,
     patient_router,
+    patient_self_router,
     pharm_router,
     reg_router,
     warehouse_router,
+)
+
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()],
 )
 
 
@@ -67,7 +80,7 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ── CORS ─────────────────────────────────────────────────────
+# ── CORS 跨域中间件 ─────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -76,11 +89,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── 注册路由 ─────────────────────────────────────────────────
-# ── 注册路由 ─────────────────────────────────────────────────
+# ── 第一步：先注册所有业务路由 ─────────────────────────────────────────────────
 for router in [
     auth_router,
     patient_router,
+    patient_self_router,
     reg_router,
     drug_router,
     pharm_router,
@@ -89,6 +102,7 @@ for router in [
     admission_router,
     nurse_router,
     order_router,
+    billing_router,
     charge_router,
     director_router,
     ai_router,
@@ -103,19 +117,15 @@ from routers import pres_router
 app.include_router(pres_router)
 
 
-@app.get("/", tags=["健康检查"])
-async def root():
-    return {
-        "system": "医院信息系统 (HIS)",
-        "version": settings.APP_VERSION,
-        "status": "running",
-        "docs": "/docs",
-    }
-
-
+# 健康检查接口
 @app.get("/health", tags=["健康检查"])
 async def health():
     return {"status": "ok"}
+
+
+# ✅ 正确：最后再挂载前端静态文件
+# 只有当所有API路由都匹配不到时，才会交给静态文件处理
+app.mount("/", StaticFiles(directory="static", html=True), name="frontend")
 
 
 if __name__ == "__main__":

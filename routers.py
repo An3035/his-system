@@ -42,6 +42,7 @@ from models import (
     AuditLog,
     Bed,
     BedStatus,
+    BillingRecord,
     ChargeItem,
     Department,
     Doctor,
@@ -100,6 +101,57 @@ async def me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+@auth_router.post("/patient-register")
+async def patient_register(
+    body: schemas.PatientRegisterRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """患者自助注册：创建 Patient 记录 + 创建 User(role=patient) 账号，注册即登录返回 token。"""
+    existing_user = await db.execute(
+        select(User).where(User.username == body.phone)
+    )
+    if existing_user.scalar_one_or_none():
+        raise HTTPException(409, "该手机号已注册，请直接登录")
+
+    # 自助注册始终创建新的 Patient 记录，不与已有记录关联
+    patient = Patient(
+        patient_no=_gen_no("P", 6),
+        name=body.name,
+        gender=body.gender,
+        birth_date=body.birth_date,
+        id_card=body.id_card,
+        phone=body.phone,
+    )
+    db.add(patient)
+    await db.flush()
+
+    user = User(
+        username=body.phone,
+        hashed_password=hash_password(body.password),
+        real_name=body.name,
+        role="patient",
+        patient_id=patient.id,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+
+    access_token = create_access_token({"sub": str(user.id)})
+    refresh_token = create_refresh_token(user.id)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "real_name": user.real_name,
+            "role": user.role,
+            "patient_id": user.patient_id,
+        },
+    }
+
+
 # ══════════════════════════════════════════════════════════════
 # 模块 1: 门诊挂号管理
 # ══════════════════════════════════════════════════════════════
@@ -156,13 +208,44 @@ async def list_registrations(
 async def pay_registration(
     reg_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin", "cashier")),
+    current_user: User = Depends(require_role("admin", "cashier")),
 ):
     result = await db.execute(select(Registration).where(Registration.id == reg_id))
     reg = result.scalar_one_or_none()
     if not reg:
         raise HTTPException(404, "挂号记录不存在")
+    if reg.payment_status == PaymentStatus.PAID:
+        raise HTTPException(409, "该挂号已收费，不可重复收费")
+
+    existing_bill = await db.execute(
+        select(BillingRecord).where(
+            BillingRecord.charge_type == "挂号收费",
+            BillingRecord.source_id == reg_id,
+            BillingRecord.status == "已收",
+        )
+    )
+    if existing_bill.scalar_one_or_none():
+        raise HTTPException(409, "该挂号已生成收费记录，不可重复收费")
+
+    now = datetime.now()
     reg.payment_status = PaymentStatus.PAID
+    reg.paid_at = now
+
+    db.add(
+        BillingRecord(
+            bill_no=_gen_no("BILL", 6),
+            charge_type="挂号收费",
+            source_id=reg.id,
+            patient_id=reg.patient_id,
+            total_amount=reg.reg_fee,
+            paid_amount=reg.reg_fee,
+            operator_id=current_user.id,
+            charge_time=now,
+            status="已收",
+            remark=f"挂号费 {reg.reg_no}",
+        )
+    )
+
     await db.commit()
     await db.refresh(reg)
     return reg
@@ -412,20 +495,51 @@ async def create_prescription(
 async def pay_prescription(
     pres_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin", "cashier")),
+    current_user: User = Depends(require_role("admin", "cashier")),
 ):
     """门诊收费 — 支付处方，自动推送至药房发药窗口（模块5）。"""
     result = await db.execute(
         select(Prescription)
-        .options(selectinload(Prescription.items))
+        .options(selectinload(Prescription.items), selectinload(Prescription.registration))
         .where(Prescription.id == pres_id)
     )
     pres = result.scalar_one_or_none()
     if not pres:
         raise HTTPException(404, "处方不存在")
+    if pres.payment_status == PaymentStatus.PAID:
+        raise HTTPException(409, "该处方已收费，不可重复收费")
+
+    existing_bill = await db.execute(
+        select(BillingRecord).where(
+            BillingRecord.charge_type == "门诊处方",
+            BillingRecord.source_id == pres_id,
+            BillingRecord.status == "已收",
+        )
+    )
+    if existing_bill.scalar_one_or_none():
+        raise HTTPException(409, "该处方已生成收费记录，不可重复收费")
+
+    now = datetime.now()
     pres.payment_status = PaymentStatus.PAID
-    # 模块5: 划价收费后处方自动传到药房发药窗口（标记待发药）
-    # 实际生产中可通过 WebSocket / Redis Pub-Sub 推送
+    pres.paid_at = now
+
+    patient_id = pres.registration.patient_id if pres.registration else 0
+
+    db.add(
+        BillingRecord(
+            bill_no=_gen_no("BILL", 6),
+            charge_type="门诊处方",
+            source_id=pres.id,
+            patient_id=patient_id,
+            total_amount=pres.total_amount,
+            paid_amount=pres.total_amount,
+            operator_id=current_user.id,
+            charge_time=now,
+            status="已收",
+            remark=f"处方费 {pres.pres_no}",
+        )
+    )
+
     await db.commit()
     await db.refresh(pres)
     return pres
@@ -958,7 +1072,7 @@ async def admit_patient(
 async def discharge_patient(
     adm_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin", "cashier")),
+    current_user: User = Depends(require_role("admin", "cashier")),
 ):
     """出院结算。"""
     result = await db.execute(
@@ -967,15 +1081,47 @@ async def discharge_patient(
     adm = result.scalar_one_or_none()
     if not adm:
         raise HTTPException(404, "住院记录不存在")
+    if adm.settled:
+        raise HTTPException(409, "已出院结算，不可重复操作")
+
+    existing_bill = await db.execute(
+        select(BillingRecord).where(
+            BillingRecord.charge_type == "住院结算",
+            BillingRecord.source_id == adm_id,
+            BillingRecord.status == "已收",
+        )
+    )
+    if existing_bill.scalar_one_or_none():
+        raise HTTPException(409, "该出院已生成收费记录，不可重复结算")
+
+    now = datetime.now()
     total = sum(item.amount for item in adm.fee_items)
     adm.total_fee = total
-    adm.discharge_date = datetime.now()
+    adm.paid_at = now
+    adm.discharge_date = now
     adm.settled = True
+
     # 释放床位
     bed_result = await db.execute(select(Bed).where(Bed.id == adm.bed_id))
     bed = bed_result.scalar_one_or_none()
     if bed:
         bed.status = BedStatus.AVAILABLE
+
+    db.add(
+        BillingRecord(
+            bill_no=_gen_no("BILL", 6),
+            charge_type="住院结算",
+            source_id=adm.id,
+            patient_id=adm.patient_id,
+            total_amount=total,
+            paid_amount=total,
+            operator_id=current_user.id,
+            charge_time=now,
+            status="已收",
+            remark=f"住院结算 {adm.admission_no}",
+        )
+    )
+
     await db.commit()
     return {
         "message": "出院结算完成",
@@ -1605,12 +1751,36 @@ async def dashboard(
     today_regs = await db.execute(
         select(func.count(Registration.id)).where(func.date(Registration.reg_date) == today)
     )
-    today_revenue_result = await db.execute(
-        select(func.coalesce(func.sum(Registration.reg_fee), 0)).where(
-            func.date(Registration.reg_date) == today,
-            Registration.payment_status == PaymentStatus.PAID,
+
+    today_rev_result = await db.execute(
+        select(
+            func.coalesce(func.sum(BillingRecord.paid_amount), 0),
+            func.coalesce(
+                func.sum(
+                    func.if_(BillingRecord.charge_type == "挂号收费", BillingRecord.paid_amount, 0)
+                ), 0,
+            ),
+            func.coalesce(
+                func.sum(
+                    func.if_(BillingRecord.charge_type == "门诊处方", BillingRecord.paid_amount, 0)
+                ), 0,
+            ),
+            func.coalesce(
+                func.sum(
+                    func.if_(BillingRecord.charge_type == "住院结算", BillingRecord.paid_amount, 0)
+                ), 0,
+            ),
+        ).where(
+            func.date(BillingRecord.charge_time) == today,
+            BillingRecord.status == "已收",
         )
     )
+    row = today_rev_result.one_or_none()
+    total_rev = row[0] or Decimal("0")
+    reg_rev = row[1] or Decimal("0")
+    pres_rev = row[2] or Decimal("0")
+    adm_rev = row[3] or Decimal("0")
+
     inpatients = await db.execute(
         select(func.count(Admission.id)).where(Admission.settled == False)
     )
@@ -1627,7 +1797,10 @@ async def dashboard(
     )
     return schemas.DashboardStats(
         today_registrations=today_regs.scalar() or 0,
-        today_revenue=today_revenue_result.scalar() or Decimal("0"),
+        today_revenue=total_rev,
+        today_reg_revenue=reg_rev,
+        today_pres_revenue=pres_rev,
+        today_adm_revenue=adm_rev,
         inpatients=inpatients.scalar() or 0,
         available_beds=avail_beds.scalar() or 0,
         low_stock_drugs=low_stock.scalar() or 0,
@@ -1642,18 +1815,19 @@ async def revenue_report(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_role("admin")),
 ):
+    """收入趋势报表 — 从统一收费主表按日期聚合所有收费类型。"""
     result = await db.execute(
         select(
-            func.date(Registration.reg_date).label("day"),
-            func.count(Registration.id).label("count"),
-            func.sum(Registration.reg_fee).label("revenue"),
+            func.date(BillingRecord.charge_time).label("day"),
+            func.count(BillingRecord.id).label("count"),
+            func.sum(BillingRecord.paid_amount).label("revenue"),
         )
         .where(
-            func.date(Registration.reg_date).between(start_date, end_date),
-            Registration.payment_status == PaymentStatus.PAID,
+            func.date(BillingRecord.charge_time).between(start_date, end_date),
+            BillingRecord.status == "已收",
         )
-        .group_by(func.date(Registration.reg_date))
-        .order_by(func.date(Registration.reg_date))
+        .group_by(func.date(BillingRecord.charge_time))
+        .order_by(func.date(BillingRecord.charge_time))
     )
     return [{"date": str(r.day), "registrations": r.count, "revenue": r.revenue} for r in result]
 
@@ -2060,10 +2234,11 @@ async def director_query(
     regs = (await db.execute(
         select(func.count(Registration.id)).where(func.date(Registration.reg_date) == today)
     )).scalar() or 0
+    # 今日收入（从统一收费主表获取，含挂号+处方+住院）
     revenue = (await db.execute(
-        select(func.coalesce(func.sum(Registration.reg_fee), 0)).where(
-            func.date(Registration.reg_date) == today,
-            Registration.payment_status == PaymentStatus.PAID,
+        select(func.coalesce(func.sum(BillingRecord.paid_amount), 0)).where(
+            func.date(BillingRecord.charge_time) == today,
+            BillingRecord.status == "已收",
         )
     )).scalar() or 0
     inpatients = (await db.execute(
@@ -2081,20 +2256,22 @@ async def director_query(
         select(func.count(MedicalOrder.id)).where(MedicalOrder.status == "执行中")
     )).scalar() or 0
 
-    # 近7天收入趋势
+    # 近7天收入趋势（从统一收费主表获取）
     week_ago = today - timedelta(days=6)
-    rev_rows = (await db.execute(
-        select(
-            func.date(Registration.reg_date).label("day"),
-            func.sum(Registration.reg_fee).label("revenue"),
+    rev_rows = (
+        await db.execute(
+            select(
+                func.date(BillingRecord.charge_time).label("day"),
+                func.sum(BillingRecord.paid_amount).label("revenue"),
+            )
+            .where(
+                func.date(BillingRecord.charge_time).between(week_ago, today),
+                BillingRecord.status == "已收",
+            )
+            .group_by(func.date(BillingRecord.charge_time))
+            .order_by(func.date(BillingRecord.charge_time))
         )
-        .where(
-            func.date(Registration.reg_date).between(week_ago, today),
-            Registration.payment_status == PaymentStatus.PAID,
-        )
-        .group_by(func.date(Registration.reg_date))
-        .order_by(func.date(Registration.reg_date))
-    )).all()
+    ).all()
     revenue_trend = [{"date": str(r.day), "revenue": float(r.revenue or 0)} for r in rev_rows]
 
     # 科室挂号量（近30天）
@@ -2350,6 +2527,684 @@ async def kb_cleanup(
     rag = get_rag_service(db)
     removed = await rag.cleanup_stale()
     return {"removed_count": removed}
+
+
+# ══════════════════════════════════════════════════════════════
+# 统一收费管理
+# ══════════════════════════════════════════════════════════════
+
+billing_router = APIRouter(prefix="/api/billing", tags=["收费管理"])
+
+
+@billing_router.get("/history")
+async def billing_history(
+    charge_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    patient_name: Optional[str] = Query(None),
+    patient_no: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin", "cashier")),
+):
+    """收费历史查询 — 从统一收费主表获取所有收费记录（含患者及操作员信息）"""
+    base_query = (
+        select(BillingRecord, Patient, User)
+        .join(Patient, BillingRecord.patient_id == Patient.id)
+        .join(User, BillingRecord.operator_id == User.id, isouter=True)
+    )
+    count_q = (
+        select(func.count())
+        .select_from(BillingRecord)
+        .join(Patient, BillingRecord.patient_id == Patient.id)
+        .join(User, BillingRecord.operator_id == User.id, isouter=True)
+    )
+
+    if charge_type:
+        base_query = base_query.where(BillingRecord.charge_type == charge_type)
+        count_q = count_q.where(BillingRecord.charge_type == charge_type)
+    if status:
+        base_query = base_query.where(BillingRecord.status == status)
+        count_q = count_q.where(BillingRecord.status == status)
+    if start_date:
+        base_query = base_query.where(func.date(BillingRecord.charge_time) >= start_date)
+        count_q = count_q.where(func.date(BillingRecord.charge_time) >= start_date)
+    if end_date:
+        base_query = base_query.where(func.date(BillingRecord.charge_time) <= end_date)
+        count_q = count_q.where(func.date(BillingRecord.charge_time) <= end_date)
+    if patient_name:
+        base_query = base_query.where(Patient.name.ilike(f"%{patient_name}%"))
+        count_q = count_q.where(Patient.name.ilike(f"%{patient_name}%"))
+    if patient_no:
+        base_query = base_query.where(Patient.patient_no.ilike(f"%{patient_no}%"))
+        count_q = count_q.where(Patient.patient_no.ilike(f"%{patient_no}%"))
+
+    total = (await db.execute(count_q)).scalar() or 0
+
+    base_query = (
+        base_query.order_by(BillingRecord.charge_time.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(base_query)
+    rows = result.all()
+
+    # ── 总结信息（直接聚合，不使用子查询） ──
+    type_q = (
+        select(
+            BillingRecord.charge_type,
+            func.sum(BillingRecord.paid_amount).label("amount"),
+            func.count(BillingRecord.id).label("cnt"),
+        )
+    )
+    if status:
+        type_q = type_q.where(BillingRecord.status == status)
+    if start_date:
+        type_q = type_q.where(func.date(BillingRecord.charge_time) >= start_date)
+    if end_date:
+        type_q = type_q.where(func.date(BillingRecord.charge_time) <= end_date)
+    type_q = type_q.group_by(BillingRecord.charge_type)
+    type_rows = (await db.execute(type_q)).all()
+
+    count_q2 = (
+        select(func.sum(BillingRecord.paid_amount))
+    )
+    if status:
+        count_q2 = count_q2.where(BillingRecord.status == status)
+    if start_date:
+        count_q2 = count_q2.where(func.date(BillingRecord.charge_time) >= start_date)
+    if end_date:
+        count_q2 = count_q2.where(func.date(BillingRecord.charge_time) <= end_date)
+    summary_total = (await db.execute(count_q2)).scalar() or 0
+
+    by_type = {row.charge_type: float(row.amount or 0) for row in type_rows}
+
+    items = []
+    for bill, patient, operator in rows:
+        # 补充业务单号
+        ref_no = ""
+        if bill.charge_type == "挂号收费":
+            reg_result = await db.execute(select(Registration.reg_no).where(Registration.id == bill.source_id))
+            ref_no = reg_result.scalar_one_or_none() or ""
+        elif bill.charge_type == "门诊处方":
+            pres_result = await db.execute(select(Prescription.pres_no).where(Prescription.id == bill.source_id))
+            ref_no = pres_result.scalar_one_or_none() or ""
+        elif bill.charge_type == "住院结算":
+            adm_result = await db.execute(select(Admission.admission_no).where(Admission.id == bill.source_id))
+            ref_no = adm_result.scalar_one_or_none() or ""
+
+        items.append({
+            "id": bill.id,
+            "bill_no": bill.bill_no,
+            "charge_type": bill.charge_type,
+            "source_id": bill.source_id,
+            "patient_id": bill.patient_id,
+            "patient_name": patient.name,
+            "patient_no": patient.patient_no,
+            "gender": patient.gender,
+            "total_amount": float(bill.total_amount or 0),
+            "paid_amount": float(bill.paid_amount or 0),
+            "operator_name": operator.real_name if operator else None,
+            "charge_time": bill.charge_time.isoformat() if bill.charge_time else None,
+            "status": bill.status,
+            "remark": bill.remark,
+            "ref_no": ref_no,
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "summary": {
+            "total_amount": float(summary_total),
+            "by_type": by_type,
+        },
+    }
+
+
+@billing_router.get("/pending", response_model=List[schemas.PendingChargeOut])
+async def billing_pending(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin", "cashier")),
+):
+    """获取所有待收费项目（挂号+处方+住院），统一格式"""
+    pending_items = []
+
+    # 待收挂号
+    regs = await db.execute(
+        select(Registration)
+        .options(selectinload(Registration.patient), selectinload(Registration.doctor))
+        .where(Registration.payment_status == PaymentStatus.PENDING)
+        .order_by(Registration.reg_date)
+        .limit(200)
+    )
+    for r in regs.scalars().all():
+        pending_items.append(schemas.PendingChargeOut(
+            id=r.id,
+            type="registration",
+            charge_type_label="挂号收费",
+            no=r.reg_no,
+            patient_id=r.patient_id,
+            patient_no=r.patient.patient_no if r.patient else "",
+            patient_name=r.patient.name if r.patient else "",
+            gender=r.patient.gender if r.patient else None,
+            age=None,
+            total_amount=r.reg_fee,
+            pay_amount=r.reg_fee,
+            deposit=Decimal("0"),
+            created_at=r.reg_date,
+        ))
+
+    # 待收处方
+    pres_results = await db.execute(
+        select(Prescription)
+        .options(
+            selectinload(Prescription.items),
+            selectinload(Prescription.registration).selectinload(Registration.patient),
+        )
+        .where(Prescription.payment_status == PaymentStatus.PENDING)
+        .order_by(Prescription.created_at)
+        .limit(200)
+    )
+    for p in pres_results.scalars().all():
+        patient = p.registration.patient if p.registration and p.registration.patient else None
+        pending_items.append(schemas.PendingChargeOut(
+            id=p.id,
+            type="prescription",
+            charge_type_label="门诊处方",
+            no=p.pres_no,
+            patient_id=p.registration.patient_id if p.registration else 0,
+            patient_no=patient.patient_no if patient else "",
+            patient_name=patient.name if patient else "",
+            gender=patient.gender if patient else None,
+            age=None,
+            total_amount=p.total_amount or Decimal("0"),
+            pay_amount=p.total_amount or Decimal("0"),
+            deposit=Decimal("0"),
+            created_at=p.created_at,
+        ))
+
+    # 待出院结算（在院）
+    adms = await db.execute(
+        select(Admission)
+        .options(selectinload(Admission.patient))
+        .where(Admission.settled == False)
+        .order_by(Admission.admit_date)
+        .limit(200)
+    )
+    for a in adms.scalars().all():
+        pending_items.append(schemas.PendingChargeOut(
+            id=a.id,
+            type="admission",
+            charge_type_label="住院结算",
+            no=a.admission_no,
+            patient_id=a.patient_id,
+            patient_no=a.patient.patient_no if a.patient else "",
+            patient_name=a.patient.name if a.patient else "",
+            gender=a.patient.gender if a.patient else None,
+            age=None,
+            total_amount=getattr(a, "total_fee", Decimal("0")) or Decimal("0"),
+            pay_amount=getattr(a, "total_fee", Decimal("0")) or Decimal("0"),
+            deposit=a.deposit,
+            created_at=a.admit_date,
+        ))
+
+    return pending_items
+
+
+@billing_router.get("/timeline/{patient_id}")
+async def billing_timeline(
+    patient_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin", "cashier")),
+):
+    """患者就医时间线 — 挂号、处方、收费记录按时间排序"""
+    timeline = []
+
+    # 挂号记录
+    reg_result = await db.execute(
+        select(Registration)
+        .options(
+            selectinload(Registration.doctor).selectinload(Doctor.department),
+            selectinload(Registration.patient),
+        )
+        .where(Registration.patient_id == patient_id)
+        .order_by(Registration.reg_date.desc())
+        .limit(100)
+    )
+    for r in reg_result.scalars().all():
+        timeline.append({
+            "time": r.reg_date.isoformat() if r.reg_date else None,
+            "type": "registration",
+            "type_label": "挂号",
+            "no": r.reg_no,
+            "department_name": r.doctor.department.name if r.doctor and r.doctor.department else None,
+            "doctor_name": r.doctor.name if r.doctor else None,
+            "amount": float(r.reg_fee or 0),
+            "status": r.payment_status,
+        })
+
+    # 处方记录（关联挂号 → 获取科室/医生）
+    pres_result = await db.execute(
+        select(Prescription)
+        .options(
+            selectinload(Prescription.items),
+            selectinload(Prescription.registration).selectinload(Registration.doctor).selectinload(Doctor.department),
+        )
+        .join(Registration, Prescription.registration_id == Registration.id)
+        .where(Registration.patient_id == patient_id)
+        .order_by(Prescription.created_at.desc())
+        .limit(100)
+    )
+    for p in pres_result.scalars().all():
+        reg = p.registration
+        timeline.append({
+            "time": p.created_at.isoformat() if p.created_at else None,
+            "type": "prescription",
+            "type_label": "处方",
+            "no": p.pres_no,
+            "department_name": reg.doctor.department.name if reg and reg.doctor and reg.doctor.department else None,
+            "doctor_name": reg.doctor.name if reg and reg.doctor else None,
+            "amount": float(p.total_amount or 0),
+            "status": p.payment_status,
+        })
+
+    # 收费记录
+    bill_result = await db.execute(
+        select(BillingRecord)
+        .where(BillingRecord.patient_id == patient_id)
+        .order_by(BillingRecord.charge_time.desc())
+        .limit(100)
+    )
+    for b in bill_result.scalars().all():
+        timeline.append({
+            "time": b.charge_time.isoformat() if b.charge_time else None,
+            "type": "billing",
+            "type_label": b.charge_type,
+            "no": b.bill_no,
+            "department_name": None,
+            "doctor_name": None,
+            "amount": float(b.paid_amount or 0),
+            "status": b.status,
+        })
+
+    # 按时间倒序
+    timeline.sort(key=lambda x: x.get("time", ""), reverse=True)
+    return timeline
+
+
+@billing_router.get("/reconciliation")
+async def billing_reconciliation(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """智能对账 — 比较业务表收入与收费主表收入"""
+    results = []
+    from datetime import timedelta
+
+    base = start_date
+    while base <= end_date:
+        day = base
+
+        # 1. 业务表收入
+        reg_rev = (await db.execute(
+            select(func.coalesce(func.sum(Registration.reg_fee), 0)).where(
+                func.date(Registration.reg_date) == day,
+                Registration.payment_status == PaymentStatus.PAID,
+            )
+        )).scalar() or 0
+
+        pres_rev = (await db.execute(
+            select(func.coalesce(func.sum(Prescription.total_amount), 0)).where(
+                func.date(Prescription.created_at) == day,
+                Prescription.payment_status == PaymentStatus.PAID,
+            )
+        )).scalar() or 0
+
+        # 住院出院结算的收费 — 按 discharge_date
+        adm_rev = (await db.execute(
+            select(func.coalesce(func.sum(Admission.total_fee), 0)).where(
+                func.date(Admission.discharge_date) == day,
+                Admission.settled == True,
+            )
+        )).scalar() or 0
+
+        dashboard_total = Decimal(str(reg_rev)) + Decimal(str(pres_rev)) + Decimal(str(adm_rev))
+
+        # 2. 收费主表收入
+        billing_total = (await db.execute(
+            select(func.coalesce(func.sum(BillingRecord.paid_amount), 0)).where(
+                func.date(BillingRecord.charge_time) == day,
+                BillingRecord.status == "已收",
+            )
+        )).scalar() or Decimal("0")
+
+        diff = billing_total - dashboard_total
+        results.append({
+            "date": str(day),
+            "dashboard_total": float(dashboard_total),
+            "billing_total": float(billing_total),
+            "difference": float(diff),
+            "matched": diff == 0,
+            "details": {
+                "reg_revenue": float(reg_rev),
+                "pres_revenue": float(pres_rev),
+                "adm_revenue": float(adm_rev),
+            },
+        })
+
+        base += timedelta(days=1)
+
+    return results
+
+
+@billing_router.get("/anomalies")
+async def billing_anomalies(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """收费异常检测 — 发现收费状态不一致的记录"""
+    anomalies = []
+
+    # 1. 已收费挂号但没有对应的 BillingRecord
+    regs = await db.execute(
+        select(Registration).where(Registration.payment_status == PaymentStatus.PAID)
+    )
+    for r in regs.scalars().all():
+        bill = await db.execute(
+            select(BillingRecord).where(
+                BillingRecord.charge_type == "挂号收费",
+                BillingRecord.source_id == r.id,
+                BillingRecord.status == "已收",
+            )
+        )
+        if not bill.scalar_one_or_none():
+            anomalies.append({
+                "type": "missing_bill",
+                "charge_type": "挂号收费",
+                "source_id": r.id,
+                "ref_no": r.reg_no,
+                "amount": float(r.reg_fee or 0),
+                "description": f"挂号 {r.reg_no} 已标记收费但无收费记录",
+            })
+
+    # 2. 已收费处方但没有对应的 BillingRecord
+    pres_results = await db.execute(
+        select(Prescription).where(Prescription.payment_status == PaymentStatus.PAID)
+    )
+    for p in pres_results.scalars().all():
+        bill = await db.execute(
+            select(BillingRecord).where(
+                BillingRecord.charge_type == "门诊处方",
+                BillingRecord.source_id == p.id,
+                BillingRecord.status == "已收",
+            )
+        )
+        if not bill.scalar_one_or_none():
+            anomalies.append({
+                "type": "missing_bill",
+                "charge_type": "门诊处方",
+                "source_id": p.id,
+                "ref_no": p.pres_no,
+                "amount": float(p.total_amount or 0),
+                "description": f"处方 {p.pres_no} 已标记收费但无收费记录",
+            })
+
+    # 3. 已结算出院但没有对应的 BillingRecord
+    adms = await db.execute(
+        select(Admission).where(Admission.settled == True)
+    )
+    for a in adms.scalars().all():
+        bill = await db.execute(
+            select(BillingRecord).where(
+                BillingRecord.charge_type == "住院结算",
+                BillingRecord.source_id == a.id,
+                BillingRecord.status == "已收",
+            )
+        )
+        if not bill.scalar_one_or_none():
+            anomalies.append({
+                "type": "missing_bill",
+                "charge_type": "住院结算",
+                "source_id": a.id,
+                "ref_no": a.admission_no,
+                "amount": float(getattr(a, "total_fee", 0) or 0),
+                "description": f"住院 {a.admission_no} 已结算但无收费记录",
+            })
+
+    return anomalies
+
+
+# ══════════════════════════════════════════════════════════════
+# 患者自助门户
+# ══════════════════════════════════════════════════════════════
+
+patient_self_router = APIRouter(prefix="/api/patient-self", tags=["患者门户"])
+
+
+@patient_self_router.get("/profile", response_model=schemas.PatientSelfOut)
+async def patient_self_profile(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("patient")),
+):
+    """获取当前患者个人信息"""
+    if not current_user.patient_id:
+        raise HTTPException(404, "当前账号未关联患者档案")
+    result = await db.execute(select(Patient).where(Patient.id == current_user.patient_id))
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(404, "患者档案不存在")
+    return patient
+
+
+@patient_self_router.get("/registrations", response_model=List[schemas.PatientRegSelfOut])
+async def patient_self_registrations(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("patient")),
+):
+    """查看自己的挂号记录"""
+    if not current_user.patient_id:
+        raise HTTPException(404, "当前账号未关联患者档案")
+    result = await db.execute(
+        select(Registration)
+        .options(selectinload(Registration.doctor).selectinload(Doctor.department))
+        .where(Registration.patient_id == current_user.patient_id)
+        .order_by(Registration.reg_date.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    registrations = result.scalars().all()
+    return [
+        schemas.PatientRegSelfOut(
+            id=r.id,
+            reg_no=r.reg_no,
+            reg_type=r.reg_type,
+            reg_fee=str(r.reg_fee),
+            payment_status=r.payment_status,
+            reg_date=r.reg_date,
+            visit_date=r.visit_date,
+            department_name=r.doctor.department.name if r.doctor and r.doctor.department else "",
+            doctor_name=r.doctor.name if r.doctor else "",
+        )
+        for r in registrations
+    ]
+
+
+@patient_self_router.get("/prescriptions", response_model=List[schemas.PatientPresSelfOut])
+async def patient_self_prescriptions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("patient")),
+):
+    """查看自己的处方记录"""
+    if not current_user.patient_id:
+        raise HTTPException(404, "当前账号未关联患者档案")
+    result = await db.execute(
+        select(Prescription)
+        .options(selectinload(Prescription.items).selectinload(PrescriptionItem.drug))
+        .join(Registration, Prescription.registration_id == Registration.id)
+        .where(Registration.patient_id == current_user.patient_id)
+        .order_by(Prescription.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    prescriptions = result.scalars().all()
+    return [
+        schemas.PatientPresSelfOut(
+            id=p.id,
+            pres_no=p.pres_no,
+            pres_type=p.pres_type,
+            total_amount=str(p.total_amount or 0),
+            payment_status=p.payment_status,
+            dispensed=p.dispensed,
+            created_at=p.created_at,
+            diagnosis=p.diagnosis,
+            items=[
+                {
+                    "drug_name": item.drug.name if item.drug else f"药品#{item.drug_id}",
+                    "quantity": float(item.quantity),
+                    "unit": item.unit,
+                    "amount": float(item.amount),
+                }
+                for item in (p.items or [])
+            ],
+        )
+        for p in prescriptions
+    ]
+
+
+@patient_self_router.get("/bills", response_model=List[schemas.PatientBillSelfOut])
+async def patient_self_bills(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("patient")),
+):
+    """查看自己的账单"""
+    if not current_user.patient_id:
+        raise HTTPException(404, "当前账号未关联患者档案")
+    result = await db.execute(
+        select(BillingRecord)
+        .where(BillingRecord.patient_id == current_user.patient_id)
+        .order_by(BillingRecord.charge_time.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    bills = result.scalars().all()
+
+    out = []
+    for b in bills:
+        # 获取业务单号
+        ref_no = ""
+        if b.charge_type == "挂号收费":
+            reg_r = await db.execute(select(Registration.reg_no).where(Registration.id == b.source_id))
+            ref_no = reg_r.scalar_one_or_none() or ""
+        elif b.charge_type == "门诊处方":
+            pres_r = await db.execute(select(Prescription.pres_no).where(Prescription.id == b.source_id))
+            ref_no = pres_r.scalar_one_or_none() or ""
+        elif b.charge_type == "住院结算":
+            adm_r = await db.execute(select(Admission.admission_no).where(Admission.id == b.source_id))
+            ref_no = adm_r.scalar_one_or_none() or ""
+
+        out.append(schemas.PatientBillSelfOut(
+            id=b.id,
+            bill_no=b.bill_no,
+            charge_type=b.charge_type,
+            ref_no=ref_no,
+            total_amount=str(b.total_amount or 0),
+            paid_amount=str(b.paid_amount or 0),
+            charge_time=b.charge_time,
+            status=b.status,
+        ))
+    return out
+
+
+@patient_self_router.get("/timeline")
+async def patient_self_timeline(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("patient")),
+):
+    """查看自己的就医时间线"""
+    if not current_user.patient_id:
+        raise HTTPException(404, "当前账号未关联患者档案")
+    pid = current_user.patient_id
+    timeline = []
+
+    # 挂号记录
+    reg_result = await db.execute(
+        select(Registration)
+        .options(
+            selectinload(Registration.doctor).selectinload(Doctor.department),
+        )
+        .where(Registration.patient_id == pid)
+        .order_by(Registration.reg_date.desc())
+        .limit(100)
+    )
+    for r in reg_result.scalars().all():
+        timeline.append({
+            "time": r.reg_date.isoformat() if r.reg_date else None,
+            "type": "registration",
+            "type_label": "挂号",
+            "no": r.reg_no,
+            "detail": f"{r.reg_type}号",
+            "department_name": r.doctor.department.name if r.doctor and r.doctor.department else None,
+            "doctor_name": r.doctor.name if r.doctor else None,
+            "amount": float(r.reg_fee or 0),
+        })
+
+    # 处方
+    pres_result = await db.execute(
+        select(Prescription)
+        .options(
+            selectinload(Prescription.registration).selectinload(Registration.doctor).selectinload(Doctor.department),
+        )
+        .join(Registration, Prescription.registration_id == Registration.id)
+        .where(Registration.patient_id == pid)
+        .order_by(Prescription.created_at.desc())
+        .limit(100)
+    )
+    for p in pres_result.scalars().all():
+        reg = p.registration
+        timeline.append({
+            "time": p.created_at.isoformat() if p.created_at else None,
+            "type": "prescription",
+            "type_label": "处方",
+            "no": p.pres_no,
+            "detail": p.diagnosis or "",
+            "department_name": reg.doctor.department.name if reg and reg.doctor and reg.doctor.department else None,
+            "doctor_name": reg.doctor.name if reg and reg.doctor else None,
+            "amount": float(p.total_amount or 0),
+        })
+
+    # 收费记录
+    bill_result = await db.execute(
+        select(BillingRecord)
+        .where(BillingRecord.patient_id == pid)
+        .order_by(BillingRecord.charge_time.desc())
+        .limit(100)
+    )
+    for b in bill_result.scalars().all():
+        timeline.append({
+            "time": b.charge_time.isoformat() if b.charge_time else None,
+            "type": "billing",
+            "type_label": b.charge_type,
+            "no": b.bill_no,
+            "detail": b.remark or "",
+            "department_name": None,
+            "doctor_name": None,
+            "amount": float(b.paid_amount or 0),
+        })
+
+    timeline.sort(key=lambda x: x.get("time", ""), reverse=True)
+    return timeline
 
 
 # ── 从 config 补充导入 ────────────────────────────────────────
